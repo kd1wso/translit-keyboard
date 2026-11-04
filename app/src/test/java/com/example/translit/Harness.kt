@@ -24,22 +24,51 @@ class Harness(
     lang: String = "ru",
     translit: TranslitMode? = null,
     settings: EngineSettings = EngineSettings(),
-    val autoDeliver: Boolean = true
+    val autoDeliver: Boolean = true,
+    reverse: Boolean = false,
+    /** Исправление раскладки (как в сервисе): 0 — выкл., 1 — ЙЦУКЕН ↔ QWERTY, 2 — ЯВЕРТЫ. */
+    layoutFixMode: Int = 0
 ) {
     companion object {
         val NO_CAPS = FieldProfile.TEXT.copy(capsModes = 0)
     }
 
+    /** Раскладка, как её настраивает сервис. */
+    data class Conf(val lang: String, val translit: TranslitMode?, val reverse: Boolean)
+
     val ed = FakeEditor()
     val eng = InputEngine(ed)
     var now = 1_000_000L
+
+    /** Запросы на переключение раскладки от исправления раскладки. */
+    val switches = ArrayList<String>()
+    var conf = Conf(lang, translit, reverse)
+        private set
+    private var beforeFix: Conf? = null
+
+    fun apply(c: Conf) {
+        conf = c
+        val keysLatin = c.lang == "en" || c.reverse
+        val def = if (keysLatin) KeyboardLayoutManager.EN_LETTERS else KeyboardLayoutManager.RU_LETTERS
+        eng.configure(c.lang, c.translit, KeyboardLayoutManager.proximity(def), c.reverse)
+    }
 
     init {
         Dicts.ensure()
         eng.clock = { now }
         eng.settings = settings
-        val def = if (lang == "en") KeyboardLayoutManager.EN_LETTERS else KeyboardLayoutManager.RU_LETTERS
-        eng.configure(lang, translit, KeyboardLayoutManager.proximity(def))
+        eng.layoutFixMode = layoutFixMode
+        eng.onSwitchLanguage = { t ->
+            switches.add(t)
+            if (t == InputEngine.SWITCH_BACK) {
+                beforeFix?.let { apply(it) }
+                beforeFix = null
+            } else {
+                beforeFix = conf
+                apply(Conf(t, null, false))
+            }
+        }
+        apply(conf)
         eng.startInput(profile, 0, 0)
         deliver()
     }
@@ -78,6 +107,16 @@ class Harness(
 
     val text: String get() = ed.text.toString()
     val chips: List<String> get() = eng.chips.map { it.label }
+
+    /** Текст в поле и выделение, как будто их сделал пользователь. */
+    fun select(text: String, start: Int = 0, end: Int = text.length) {
+        ed.text.setLength(0)
+        ed.text.append(text)
+        ed.userSelect(start, end)
+        deliver()
+    }
+
+    val selection: String get() = ed.text.substring(minOf(ed.selS, ed.selE), maxOf(ed.selS, ed.selE))
 
     fun pick(label: String) {
         val i = eng.chips.indexOfFirst { it.label == label }

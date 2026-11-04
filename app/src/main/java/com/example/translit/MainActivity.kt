@@ -2,14 +2,17 @@ package com.example.translit
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.text.Editable
+import android.text.InputType
+import android.text.TextWatcher
 import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -48,65 +51,111 @@ class MainActivity : Activity() {
             imm.showInputMethodPicker()
         })
 
-        // --- Раскладка по умолчанию
+        // --- Раскладки
         content.addView(section("Раскладка по умолчанию"))
-        val layoutGroup = RadioGroup(this)
-        for ((name, label) in listOf(
+        content.addView(radioGroup(listOf(
             "TRANSLIT" to "Транслит (привет → privet)",
-            "CYRILLIC" to "ЙЦУКЕН (обычная русская)",
-            "LATIN" to "QWERTY (английская)"
-        )) {
-            layoutGroup.addView(RadioButton(this).apply {
-                text = label
-                id = View.generateViewId()
-                tag = name
-                setTextColor(Color.WHITE)
-            })
-        }
-        val curLayout = KbSettings.get(this).layoutName
-        for (i in 0 until layoutGroup.childCount) {
-            val rb = layoutGroup.getChildAt(i) as RadioButton
-            if (rb.tag == curLayout) layoutGroup.check(rb.id)
-        }
-        layoutGroup.setOnCheckedChangeListener { _, checkedId ->
-            val rb = layoutGroup.findViewById<RadioButton>(checkedId) ?: return@setOnCheckedChangeListener
-            KbSettings.update(this) { it.copy(layoutName = rb.tag as String) }
-        }
-        content.addView(layoutGroup)
+            "CYRILLIC" to "Русская (кириллица)",
+            "REVERSE" to "Обратный транслит (privet → привет)",
+            "LATIN" to "Английская (QWERTY)"
+        ), KbSettings.get(this).layoutName) { v -> KbSettings.update(this) { it.copy(layoutName = v) } })
+        content.addView(switchRow("Запоминать раскладку для каждого приложения", KbSettings.get(this).perAppLayout) { checked ->
+            KbSettings.update(this) { it.copy(perAppLayout = checked) }
+            if (!checked) KbSettings.clearAppLayouts(this)
+        })
+
+        content.addView(section("Раскладки на клавише 🌐"))
+        content.addView(switchRow("Транслит", KbSettings.get(this).cycleTranslit) { checked ->
+            KbSettings.update(this) { it.copy(cycleTranslit = checked) }
+        })
+        content.addView(switchRow("Русская", KbSettings.get(this).cycleCyrillic) { checked ->
+            KbSettings.update(this) { it.copy(cycleCyrillic = checked) }
+        })
+        content.addView(switchRow("Обратный транслит (латиницей → по-русски)", KbSettings.get(this).cycleReverse) { checked ->
+            KbSettings.update(this) { it.copy(cycleReverse = checked) }
+        })
+        content.addView(switchRow("Английская", KbSettings.get(this).cycleLatin) { checked ->
+            KbSettings.update(this) { it.copy(cycleLatin = checked) }
+        })
+        content.addView(note("Обратный транслит: печатаете латиницей «privet, kak dela» — в поле " +
+            "«привет, как дела». Неоднозначное (ts — «ц» или «тс», e — «е» или «э») решает словарь. " +
+            "Свои раскладки из JSON тоже попадают на 🌐."))
+
+        content.addView(section("Русские буквы"))
+        content.addView(radioGroup(listOf(
+            KbSettings.RU_JCUKEN to "ЙЦУКЕН (как на компьютере)",
+            KbSettings.RU_YAVERTY to "ЯВЕРТЫ (фонетическая: я — q, в — w, ч — h)"
+        ), KbSettings.get(this).ruLayout) { v -> KbSettings.update(this) { it.copy(ruLayout = v) } })
 
         // --- Транслит
         content.addView(section("Способ транслитерации"))
-        val modeGroup = RadioGroup(this)
-        val colloquial = RadioButton(this).apply {
-            text = "Разговорная (й→y, ц→c, х→h, щ→sch)"
-            id = View.generateViewId(); setTextColor(Color.WHITE)
-        }
-        val passport = RadioButton(this).apply {
-            text = "Паспортная ICAO (й→i, ц→ts, х→kh, щ→shch)"
-            id = View.generateViewId(); setTextColor(Color.WHITE)
-        }
-        modeGroup.addView(colloquial)
-        modeGroup.addView(passport)
-        modeGroup.check(if (KbSettings.get(this).translitMode == TranslitMode.COLLOQUIAL)
-            colloquial.id else passport.id)
         val preview = note("")
+        val customBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         fun updatePreview() {
-            val mode = KbSettings.get(this).translitMode
-            val sample = "привет щука юлия"
-            val out = sample.map { if (it == ' ') ' ' else mode.translit(it, false) }.joinToString("")
-            preview.text = "$sample → $out"
+            val st = KbSettings.get(this)
+            TranslitMode.customTable = TranslitMode.parseCustom(st.customTable)
+            val sample = "Привет, щука! Юлия, Елена, подъезд"
+            preview.text = "$sample → ${st.translitMode.translitWord(sample)}"
         }
+        fun renderCustomEditor() {
+            customBox.removeAllViews()
+            val st = KbSettings.get(this)
+            if (st.translitMode != TranslitMode.CUSTOM) return
+            customBox.addView(note("Латиница для каждой буквы (пусто — буква не выводится):"))
+            val table = HashMap(TranslitMode.parseCustom(st.customTable))
+            for (chunk in TranslitMode.ALPHABET.toList().chunked(3)) {
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                for (c in chunk) {
+                    val cell = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    cell.addView(TextView(this).apply {
+                        text = "$c ="
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                        setTextColor(textColor())
+                        setPadding(0, 0, dp(4f).toInt(), 0)
+                    })
+                    cell.addView(EditText(this).apply {
+                        setText(table[c] ?: "")
+                        setSingleLine()
+                        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                        setTextColor(textColor())
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        addTextChangedListener(object : TextWatcher {
+                            override fun beforeTextChanged(t: CharSequence?, a: Int, b: Int, d: Int) {}
+                            override fun onTextChanged(t: CharSequence?, a: Int, b: Int, d: Int) {}
+                            override fun afterTextChanged(e: Editable?) {
+                                table[c] = e?.toString()?.trim()?.lowercase() ?: ""
+                                KbSettings.update(this@MainActivity) { it.copy(customTable = TranslitMode.serializeCustom(table)) }
+                                updatePreview()
+                            }
+                        })
+                    })
+                    row.addView(cell)
+                }
+                customBox.addView(row)
+            }
+            customBox.addView(button("Сбросить к разговорной") {
+                KbSettings.update(this) { it.copy(customTable = "") }
+                renderCustomEditor()
+                updatePreview()
+            })
+        }
+        content.addView(radioGroup(
+            TranslitMode.values().map { it.name to "${it.title} (${it.example})" },
+            KbSettings.get(this).translitMode.name
+        ) { v ->
+            KbSettings.update(this) { it.copy(translitMode = TranslitMode.byName(v)) }
+            updatePreview()
+            renderCustomEditor()
+        })
         updatePreview()
-        colloquial.setOnClickListener {
-            KbSettings.update(this) { it.copy(translitMode = TranslitMode.COLLOQUIAL) }
-            updatePreview()
-        }
-        passport.setOnClickListener {
-            KbSettings.update(this) { it.copy(translitMode = TranslitMode.PASSPORT) }
-            updatePreview()
-        }
-        content.addView(modeGroup)
+        renderCustomEditor()
         content.addView(preview)
+        content.addView(customBox)
 
         // --- Тема
         content.addView(section("Тема оформления"))
@@ -214,6 +263,12 @@ class MainActivity : Activity() {
         content.addView(switchRow("Запоминать новые слова", KbSettings.get(this).learnWords) { checked ->
             KbSettings.update(this) { it.copy(learnWords = checked) }
         })
+        content.addView(switchRow("Исправлять раскладку (ghbdtn → привет)", KbSettings.get(this).layoutFix) { checked ->
+            KbSettings.update(this) { it.copy(layoutFix = checked) }
+        })
+        content.addView(note("Слово, набранное не в той раскладке, заменяется по пробелу, и раскладка " +
+            "переключается; ⌫ сразу после замены возвращает как было. Выделите текст — над клавиатурой " +
+            "появятся действия: → латиница, → кириллица, ⇄ раскладка, → ссылка (privet-mir)."))
         content.addView(button("Забыть выученные слова") {
             UserHistory.load(java.io.File(filesDir, "user_history.tsv"))
             UserHistory.clear()
@@ -290,6 +345,28 @@ class MainActivity : Activity() {
             }
             accentRow.addView(v)
         }
+    }
+
+    private fun textColor(): Int = KbSettings.palette(KbSettings.get(this)).text
+
+    /** Список вариантов: [options] — значение → подпись. */
+    private fun radioGroup(options: List<Pair<String, String>>, current: String, onPick: (String) -> Unit): RadioGroup {
+        val group = RadioGroup(this)
+        for ((value, label) in options) {
+            val rb = RadioButton(this).apply {
+                text = label
+                id = View.generateViewId()
+                tag = value
+                setTextColor(textColor())
+            }
+            group.addView(rb)
+            if (value == current) group.check(rb.id)
+        }
+        group.setOnCheckedChangeListener { g, checkedId ->
+            val rb = g.findViewById<RadioButton>(checkedId) ?: return@setOnCheckedChangeListener
+            if (rb.isChecked) onPick(rb.tag as String)
+        }
+        return group
     }
 
     private fun header(text: String) = TextView(this).apply {

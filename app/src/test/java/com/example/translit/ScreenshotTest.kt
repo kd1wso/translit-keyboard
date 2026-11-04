@@ -183,4 +183,55 @@ class ScreenshotTest {
         start(EditorInfo().apply { inputType = InputType.TYPE_CLASS_PHONE })
         shot("10_phone")
     }
+
+    private val app get() = org.robolectric.RuntimeEnvironment.getApplication()
+
+    @Test
+    fun reverseTranslit() {
+        KbSettings.update(app) { it.copy(layoutName = "REVERSE") }
+        start(textField())
+        for (c in "privet") tapChar(c.toString())
+        val strip = texts(root)
+        assertTrue(strip.toString(), strip.any { it.equals("привет", ignoreCase = true) })
+        shot("11_reverse_typing")
+    }
+
+    @Test
+    fun layoutFixChip() {
+        KbSettings.update(app) { it.copy(layoutName = "LATIN") }
+        start(textField())
+        for (c in "ghbdtn") tapChar(c.toString())
+        val strip = texts(root)
+        assertTrue(strip.toString(), strip.any { it.equals("привет", ignoreCase = true) })
+        shot("12_layout_fix")
+    }
+
+    @Test
+    fun yaverty() {
+        KbSettings.update(app) { it.copy(layoutName = "CYRILLIC", ruLayout = KbSettings.RU_YAVERTY) }
+        start(textField())
+        shot("13_yaverty")
+    }
+
+    @Test
+    fun settingsScreen() {
+        KbSettings.update(app) { it.copy(translitMode = TranslitMode.CUSTOM) }
+        val act = Robolectric.buildActivity(MainActivity::class.java).setup().get()
+        idle()
+        val content = act.findViewById<ViewGroup>(android.R.id.content)
+        var v: View = content
+        while (v is ViewGroup && v !is android.widget.ScrollView && v.childCount > 0) v = v.getChildAt(0)
+        val body = if (v is android.widget.ScrollView) v.getChildAt(0) else content
+        val w = act.resources.displayMetrics.widthPixels
+        body.measure(
+            View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        body.layout(0, 0, w, body.measuredHeight)
+        val bmp = Bitmap.createBitmap(w, body.measuredHeight, Bitmap.Config.ARGB_8888)
+        bmp.eraseColor(KbSettings.palette(KbSettings.get(app)).bg)
+        body.draw(Canvas(bmp))
+        val dir = File("build/screenshots").apply { mkdirs() }
+        FileOutputStream(File(dir, "14_settings.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
 }

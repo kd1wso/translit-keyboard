@@ -17,7 +17,8 @@ object UserHistory {
     private const val MAX_WORDS = 6000
     private const val MAX_PAIRS = 12000
 
-    private val words = HashMap<String, Word>()                       // "lang|key"
+    // отсортировано: слова с префиксом достаются без перебора всех выученных
+    private val words = java.util.TreeMap<String, Word>()             // "lang|key"
     private val pairs = HashMap<String, HashMap<String, Int>>()       // "lang|prev" -> next -> count
     private var pairCount = 0
     private var dirty = false
@@ -63,8 +64,8 @@ object UserHistory {
     fun completions(lang: String, prefix: String, minCount: Int, limit: Int): List<Pair<String, Int>> {
         if (prefix.isEmpty()) return emptyList()
         val p = "$lang|$prefix"
-        return words.entries.asSequence()
-            .filter { it.value.count >= minCount && it.key.startsWith(p) }
+        return words.subMap(p, p + '\uFFFF').entries.asSequence()
+            .filter { it.value.count >= minCount }
             .sortedByDescending { it.value.count }
             .take(limit)
             .map { it.key.substring(lang.length + 1) to it.value.count }

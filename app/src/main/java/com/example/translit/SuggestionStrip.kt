@@ -3,6 +3,7 @@ package com.example.translit
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
@@ -88,21 +89,58 @@ class SuggestionStrip(
         render()
     }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (w != oldw) post { render() }
+    }
+
+    private val measurePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
     private fun render() {
+        val shown = chips.take(chipViews.size)
+        val n = shown.size
+        // выделена подсказка, которую вставит пробел; раскладка и действия — цветом акцента
+        val bold = shown.map { it.auto || it.kind == InputEngine.ChipKind.ACTION || it.kind == InputEngine.ChipKind.LAYOUT }
+        val sizes = shown.map { (if (it.kind == InputEngine.ChipKind.ACTION) 13f else 15f) * fontScale }
+        val widths = shown.mapIndexed { i, c ->
+            measurePaint.textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, sizes[i], resources.displayMetrics)
+            measurePaint.typeface = if (bold[i]) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            measurePaint.measureText(c.label)
+        }
+        // подсказки делят ширину поровну; если длинное слово не влезает — по длине и чуть мельче
+        val avail = (if (chipsBox.width > 0) chipsBox.width else resources.displayMetrics.widthPixels - dp(96f).toInt()).toFloat()
+        val extra = dp(12f) + dp(4f) + dp(2f)
+        val equal = n == 0 || widths.all { it + extra <= avail / n }
+        var scale = 1f
+        if (!equal) {
+            val room = avail - extra * n
+            val sum = widths.sum()
+            if (sum > room && sum > 0f) scale = maxOf(0.78f, room / sum)
+        }
         for ((i, v) in chipViews.withIndex()) {
-            val c = chips.getOrNull(i)
+            val c = shown.getOrNull(i)
             if (c == null) {
                 v.visibility = View.GONE
                 continue
             }
             v.visibility = View.VISIBLE
             v.text = c.label
-            v.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f * fontScale)
-            val highlight = c.kind == InputEngine.ChipKind.CORRECTION
-            v.setTypeface(null, if (highlight) Typeface.BOLD else Typeface.NORMAL)
+            val action = c.kind == InputEngine.ChipKind.ACTION
+            v.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizes[i] * scale)
+            (v.layoutParams as? LayoutParams)?.let {
+                val wt = if (equal) 1f else widths[i] * scale + extra
+                if (it.weight != wt) {
+                    it.weight = wt
+                    v.layoutParams = it
+                }
+            }
+            val highlight = c.auto
+            val accented = !highlight && (action || c.kind == InputEngine.ChipKind.LAYOUT)
+            v.setTypeface(null, if (bold[i]) Typeface.BOLD else Typeface.NORMAL)
             v.setTextColor(
                 when {
                     highlight -> Color.WHITE
+                    accented -> pal.accent
                     c.kind == InputEngine.ChipKind.TYPED -> pal.dimText
                     else -> pal.text
                 }
@@ -111,7 +149,7 @@ class SuggestionStrip(
                 cornerRadius = dp(17f)
                 if (highlight) setColor(pal.accent) else {
                     setColor(pal.funcTop)
-                    setStroke(dp(1f).toInt(), pal.funcStroke)
+                    setStroke(dp(1f).toInt(), if (accented) pal.accent else pal.funcStroke)
                 }
             }
             v.contentDescription = c.label

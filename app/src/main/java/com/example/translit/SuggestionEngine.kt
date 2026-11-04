@@ -146,6 +146,28 @@ object SuggestionEngine {
         return UserHistory.count(lang, key) >= UserHistory.VALID_COUNT
     }
 
+    /** Частота известного слова с учётом личной статистики; 0 — неизвестное или грубое. */
+    fun wordCount(lang: String, key: String): Int {
+        if (key.isEmpty()) return 0
+        val d = dict(lang)
+        val i = d.indexOf(key)
+        val user = UserHistory.count(lang, key)
+        if (i >= 0) return if (d.isBlockedAt(i)) 0 else d.countAt(i) + user * 200
+        if (user >= UserHistory.VALID_COUNT) return user * 200
+        if (extra[lang]?.containsKey(key) == true) return 1000
+        return 0
+    }
+
+    /** Частота самого частого известного слова, начинающегося с [prefix] (само слово тоже считается). */
+    fun prefixCount(lang: String, prefix: String): Int {
+        if (prefix.isEmpty()) return 0
+        val d = dict(lang)
+        var best = d.completions(prefix, 1).let { if (it.isNotEmpty()) d.countAt(it[0]) else 0 }
+        for ((_, c) in UserHistory.completions(lang, prefix, UserHistory.VALID_COUNT, 1)) best = maxOf(best, c * 200)
+        if (best == 0 && extra[lang]?.subMap(prefix, prefix + '\uFFFF')?.isNotEmpty() == true) best = 1000
+        return best
+    }
+
     /** ln(частоты) с учётом личной статистики; null — неизвестное или грубое слово. */
     private fun baseScore(lang: String, key: String, d: WordDictionary): Double? {
         val i = d.indexOf(key)

@@ -4,6 +4,10 @@ import android.content.Context
 
 object KbSettings {
     private const val PREFS = "translit_prefs"
+    private const val APP_PREFS = "translit_app_layouts"
+
+    const val RU_JCUKEN = "JCUKEN"
+    const val RU_YAVERTY = "YAVERTY"
 
     data class State(
         val translitMode: TranslitMode,
@@ -18,7 +22,15 @@ object KbSettings {
         val suggestionsEnabled: Boolean,
         val autoCaps: Boolean = true,          // заглавная в начале предложения
         val doubleSpacePeriod: Boolean = true, // «. » двойным пробелом
-        val learnWords: Boolean = true         // запоминать новые слова
+        val learnWords: Boolean = true,        // запоминать новые слова
+        val ruLayout: String = RU_JCUKEN,      // русские буквы: ЙЦУКЕН или ЯВЕРТЫ
+        val cycleTranslit: Boolean = true,     // раскладки, которые перебирает 🌐
+        val cycleCyrillic: Boolean = true,
+        val cycleReverse: Boolean = false,
+        val cycleLatin: Boolean = true,
+        val layoutFix: Boolean = true,         // ghbdtn → привет
+        val perAppLayout: Boolean = true,      // своя раскладка в каждом приложении
+        val customTable: String = ""           // своя таблица транслита: строки «а=a»
     )
 
     data class Palette(
@@ -93,8 +105,7 @@ object KbSettings {
             ?: if (legacyDark) "midnight" else "light"
         val hasAccent = p.contains("accentOverride")
         return State(
-            translitMode = TranslitMode.values().firstOrNull { it.name == modeName }
-                ?: TranslitMode.COLLOQUIAL,
+            translitMode = TranslitMode.byName(modeName),
             themeId = themeId,
             accentOverride = if (hasAccent) p.getInt("accentOverride", 0) else null,
             keyHeight = p.getFloat("keyHeight", 1f).coerceIn(0.8f, 1.6f),
@@ -106,7 +117,15 @@ object KbSettings {
             suggestionsEnabled = p.getBoolean("suggestions", true),
             autoCaps = p.getBoolean("autoCaps", true),
             doubleSpacePeriod = p.getBoolean("doubleSpacePeriod", true),
-            learnWords = p.getBoolean("learnWords", true)
+            learnWords = p.getBoolean("learnWords", true),
+            ruLayout = if (p.getString("ruLayout", RU_JCUKEN) == RU_YAVERTY) RU_YAVERTY else RU_JCUKEN,
+            cycleTranslit = p.getBoolean("cycleTranslit", true),
+            cycleCyrillic = p.getBoolean("cycleCyrillic", true),
+            cycleReverse = p.getBoolean("cycleReverse", false),
+            cycleLatin = p.getBoolean("cycleLatin", true),
+            layoutFix = p.getBoolean("layoutFix", true),
+            perAppLayout = p.getBoolean("perAppLayout", true),
+            customTable = p.getString("customTable", "") ?: ""
         )
     }
 
@@ -125,9 +144,30 @@ object KbSettings {
             .putBoolean("autoCaps", st.autoCaps)
             .putBoolean("doubleSpacePeriod", st.doubleSpacePeriod)
             .putBoolean("learnWords", st.learnWords)
+            .putString("ruLayout", st.ruLayout)
+            .putBoolean("cycleTranslit", st.cycleTranslit)
+            .putBoolean("cycleCyrillic", st.cycleCyrillic)
+            .putBoolean("cycleReverse", st.cycleReverse)
+            .putBoolean("cycleLatin", st.cycleLatin)
+            .putBoolean("layoutFix", st.layoutFix)
+            .putBoolean("perAppLayout", st.perAppLayout)
+            .putString("customTable", st.customTable)
         if (st.accentOverride != null) e.putInt("accentOverride", st.accentOverride)
         else e.remove("accentOverride")
         e.apply()
+    }
+
+    // ---- раскладка для каждого приложения: имя пакета → раскладка
+
+    fun appLayout(ctx: Context, pkg: String): String? =
+        ctx.getSharedPreferences(APP_PREFS, Context.MODE_PRIVATE).getString(pkg, null)
+
+    fun setAppLayout(ctx: Context, pkg: String, layout: String) {
+        ctx.getSharedPreferences(APP_PREFS, Context.MODE_PRIVATE).edit().putString(pkg, layout).apply()
+    }
+
+    fun clearAppLayouts(ctx: Context) {
+        ctx.getSharedPreferences(APP_PREFS, Context.MODE_PRIVATE).edit().clear().apply()
     }
 
     fun palette(st: State): Palette {

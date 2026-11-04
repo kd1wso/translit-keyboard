@@ -57,6 +57,16 @@ object KeyboardLayoutManager {
         row("я","ч","с","м","и","т","ь","б","ю")
     ))
 
+    private fun k(label: String, vararg lp: String) = KeyDef(label, lp.toList())
+
+    /** Фонетическая ЯВЕРТЫ: буквы на местах похожих латинских (я — q, в — w, ч — h). */
+    val RU_PHONETIC = LayoutDef("ru_phonetic", "ЯВЕРТЫ", listOf(
+        listOf(k("я", "1"), k("в", "2"), k("е", "ё", "3"), k("р", "4"), k("т", "5"), k("ы", "6"),
+            k("у", "7"), k("и", "8"), k("о", "9"), k("п", "0"), k("ш"), k("щ")),
+        listOf(k("а"), k("с"), k("д"), k("ф"), k("г"), k("ч"), k("й"), k("к"), k("л"), k("э"), k("ю")),
+        listOf(k("з"), k("х"), k("ц"), k("ж"), k("б"), k("н"), k("м"), k("ь", "ъ"))
+    ))
+
     val EN_LETTERS = LayoutDef("en", "QWERTY", listOf(
         row("q","w","e","r","t","y","u","i","o","p"),
         row("a","s","d","f","g","h","j","k","l"),

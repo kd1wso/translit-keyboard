@@ -33,7 +33,7 @@ import kotlin.concurrent.thread
 
 class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
 
-    enum class Layout { TRANSLIT, CYRILLIC, LATIN, CUSTOM }
+    enum class Layout { TRANSLIT, CYRILLIC, LATIN, REVERSE, CUSTOM }
 
     private lateinit var st: KbSettings.State
     private lateinit var pal: KbSettings.Palette
@@ -42,6 +42,10 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
     private var layout = Layout.TRANSLIT
     private var lastDefaultLayout: String? = null
     private var customLayoutIndex = 0
+    /** Раскладка до автоматического переключения (исправление раскладки) — для отмены. */
+    private var layoutBeforeFix: Pair<Layout, Int>? = null
+    /** Приложение, в котором сейчас печатают (для раскладки «своей для каждого приложения»). */
+    private var currentPackage: String? = null
     private var page = Page.LETTERS
     private var profile = FieldProfile.TEXT
     private var lettersDef = KeyboardLayoutManager.RU_LETTERS
@@ -69,6 +73,7 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         pal = KbSettings.palette(st)
         engine = InputEngine(IcBridge())
         engine.listener = { onEngineChanged() }
+        engine.onSwitchLanguage = { target -> switchForFix(target) }
         layout = layoutFromName(st.layoutName)
         lastDefaultLayout = st.layoutName
         applySettingsToEngine()
@@ -141,10 +146,15 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         super.onStartInputView(info, restarting)
         st = KbSettings.get(this)
         pal = KbSettings.palette(st)
-        if (st.layoutName != lastDefaultLayout) {
-            layout = layoutFromName(st.layoutName)
-            lastDefaultLayout = st.layoutName
+        val pkg = info?.packageName
+        currentPackage = pkg
+        val saved = if (st.perAppLayout && pkg != null) KbSettings.appLayout(this, pkg) else null
+        when {
+            saved != null -> setLayoutByName(saved)
+            st.perAppLayout || st.layoutName != lastDefaultLayout -> setLayoutByName(st.layoutName)
         }
+        lastDefaultLayout = st.layoutName
+        layoutBeforeFix = null
         page = when (profile.kind) {
             FieldProfile.Kind.NUMBER, FieldProfile.Kind.DATETIME -> Page.NUMBER
             FieldProfile.Kind.PHONE -> Page.PHONE
@@ -174,8 +184,35 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         executor.execute { UserHistory.saveIfDirty() }
     }
 
-    private fun layoutFromName(name: String): Layout =
-        try { Layout.valueOf(name) } catch (_: Exception) { Layout.TRANSLIT }
+    private fun layoutFromName(name: String): Layout {
+        val l = try { Layout.valueOf(name) } catch (_: Exception) { Layout.TRANSLIT }
+        return if (l == Layout.CUSTOM) Layout.TRANSLIT else l
+    }
+
+    /** «TRANSLIT», «LATIN»… или «CUSTOM:id» для своей раскладки. */
+    private fun setLayoutByName(name: String) {
+        if (name.startsWith("CUSTOM:")) {
+            val i = KeyboardLayoutManager.customLayouts(this).indexOfFirst { it.id == name.substring(7) }
+            if (i >= 0) {
+                layout = Layout.CUSTOM
+                customLayoutIndex = i
+                return
+            }
+            layout = layoutFromName(st.layoutName)
+            return
+        }
+        layout = layoutFromName(name)
+    }
+
+    private fun layoutName(): String =
+        if (layout == Layout.CUSTOM) "CUSTOM:" + lettersDef.id else layout.name
+
+    /** Запомнить раскладку для текущего приложения. */
+    private fun rememberLayout() {
+        if (!st.perAppLayout) return
+        val pkg = currentPackage ?: return
+        KbSettings.setAppLayout(this, pkg, layoutName())
+    }
 
     // ================================================================ поле ввода
 
@@ -243,6 +280,7 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         override fun cursorCapsMode(reqModes: Int): Int = ic?.getCursorCapsMode(reqModes) ?: 0
         override fun beginBatch() { ic?.beginBatchEdit() }
         override fun endBatch() { ic?.endBatchEdit() }
+        override fun selectedText(): CharSequence? = ic?.getSelectedText(0)
     }
 
     // ================================================================ раскладки
@@ -253,16 +291,26 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
             suggestions = st.suggestionsEnabled,
             learn = st.learnWords,
             autoCaps = st.autoCaps,
-            doubleSpacePeriod = st.doubleSpacePeriod
+            doubleSpacePeriod = st.doubleSpacePeriod,
+            layoutFix = st.layoutFix
         )
+        TranslitMode.customTable = TranslitMode.parseCustom(st.customTable)
+        engine.actionTranslit = st.translitMode
     }
 
+    private fun ruLettersDef(): KeyboardLayoutManager.LayoutDef =
+        if (st.ruLayout == KbSettings.RU_YAVERTY) KeyboardLayoutManager.RU_PHONETIC else KeyboardLayoutManager.RU_LETTERS
+
     private fun currentLettersDef(): KeyboardLayoutManager.LayoutDef = when (layout) {
-        Layout.TRANSLIT, Layout.CYRILLIC -> KeyboardLayoutManager.RU_LETTERS
-        Layout.LATIN -> KeyboardLayoutManager.EN_LETTERS
+        Layout.TRANSLIT, Layout.CYRILLIC -> ruLettersDef()
+        Layout.LATIN, Layout.REVERSE -> KeyboardLayoutManager.EN_LETTERS
         Layout.CUSTOM -> KeyboardLayoutManager.customLayouts(this).getOrNull(customLayoutIndex)
             ?: KeyboardLayoutManager.RU_LETTERS
     }
+
+    /** Куда переключаться, когда слово оказалось набрано по-русски в английской раскладке. */
+    private fun russianLayout(): Layout =
+        if (st.cycleCyrillic || !st.cycleTranslit) Layout.CYRILLIC else Layout.TRANSLIT
 
     private fun applyLayoutToEngine() {
         if (layout == Layout.CUSTOM && KeyboardLayoutManager.customLayouts(this).getOrNull(customLayoutIndex) == null) {
@@ -271,36 +319,71 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         val def = currentLettersDef()
         lettersDef = def
         val lang = when (layout) {
-            Layout.TRANSLIT, Layout.CYRILLIC -> "ru"
+            Layout.TRANSLIT, Layout.CYRILLIC, Layout.REVERSE -> "ru"
             Layout.LATIN -> "en"
             Layout.CUSTOM -> KeyboardLayoutManager.languageOf(def)
         }
         val prox = proximityCache.getOrPut(def.id + "/" + def.rows.hashCode()) { KeyboardLayoutManager.proximity(def) }
-        engine.configure(lang, if (layout == Layout.TRANSLIT) st.translitMode else null, prox)
+        val yaverty = st.ruLayout == KbSettings.RU_YAVERTY
+        // латиница → русский — только по ЙЦУКЕН (в ЯВЕРТЫ «privet» — это и есть «привет» транслитом)
+        engine.layoutFixMode = when (layout) {
+            Layout.TRANSLIT, Layout.CYRILLIC -> if (yaverty) 2 else 1
+            Layout.LATIN, Layout.REVERSE -> if (yaverty) 0 else 1
+            Layout.CUSTOM -> 0
+        }
+        engine.fixRuRender = if (russianLayout() == Layout.TRANSLIT) st.translitMode else null
+        engine.configure(
+            lang, if (layout == Layout.TRANSLIT) st.translitMode else null, prox,
+            reverse = layout == Layout.REVERSE
+        )
     }
 
-    private fun cycleLayout() {
-        val customs = KeyboardLayoutManager.customLayouts(this)
-        layout = when (layout) {
-            Layout.TRANSLIT -> Layout.CYRILLIC
-            Layout.CYRILLIC -> if (customs.isNotEmpty()) {
-                customLayoutIndex = 0
-                Layout.CUSTOM
-            } else Layout.LATIN
-            Layout.CUSTOM -> if (customLayoutIndex < customs.size - 1) {
-                customLayoutIndex++
-                Layout.CUSTOM
-            } else Layout.LATIN
-            Layout.LATIN -> Layout.TRANSLIT
+    /** Исправление раскладки просит переключиться на язык слова (или вернуть прежнюю раскладку). */
+    private fun switchForFix(target: String) {
+        if (target == InputEngine.SWITCH_BACK) {
+            val back = layoutBeforeFix ?: return
+            layoutBeforeFix = null
+            layout = back.first
+            customLayoutIndex = back.second
+        } else {
+            layoutBeforeFix = layout to customLayoutIndex
+            layout = if (target == "en") Layout.LATIN else russianLayout()
         }
         applyLayoutToEngine()
         rebuildKeys()
         onEngineChanged()
+        rememberLayout()
+    }
+
+    /** Раскладки на 🌐 по порядку: транслит, русская, свои, обратный транслит, английская. */
+    private fun cycleOrder(): List<Pair<Layout, Int>> {
+        val order = ArrayList<Pair<Layout, Int>>()
+        if (st.cycleTranslit) order.add(Layout.TRANSLIT to 0)
+        if (st.cycleCyrillic) order.add(Layout.CYRILLIC to 0)
+        for (i in KeyboardLayoutManager.customLayouts(this).indices) order.add(Layout.CUSTOM to i)
+        if (st.cycleReverse) order.add(Layout.REVERSE to 0)
+        if (st.cycleLatin) order.add(Layout.LATIN to 0)
+        if (order.isEmpty()) order.add(Layout.TRANSLIT to 0)
+        return order
+    }
+
+    private fun cycleLayout() {
+        val order = cycleOrder()
+        val cur = order.indexOfFirst { it.first == layout && (layout != Layout.CUSTOM || it.second == customLayoutIndex) }
+        val next = order[(cur + 1) % order.size]
+        layout = next.first
+        customLayoutIndex = next.second
+        layoutBeforeFix = null
+        applyLayoutToEngine()
+        rebuildKeys()
+        onEngineChanged()
+        rememberLayout()
     }
 
     private fun spaceLabel(): String = when (layout) {
-        Layout.TRANSLIT -> if (st.translitMode == TranslitMode.PASSPORT) "транслит ICAO" else "транслит"
+        Layout.TRANSLIT -> st.translitMode.spaceLabel
         Layout.CYRILLIC -> "русский"
+        Layout.REVERSE -> "lat → рус"
         Layout.LATIN -> "english"
         Layout.CUSTOM -> lettersDef.name
     }
@@ -315,7 +398,7 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private fun rebuildKeys() {
         val kv = keyboard ?: return
-        val lettersLabel = if (engine.lang == "en") "ABC" else "АБВ"
+        val lettersLabel = if (KeyboardLayoutManager.languageOf(lettersDef) == "en") "ABC" else "АБВ"
         fun bottom() = KeyboardModels.bottomRow(
             KeyboardModels.BottomSpec(page, lettersLabel, profile.kind, enterIcon())
         )

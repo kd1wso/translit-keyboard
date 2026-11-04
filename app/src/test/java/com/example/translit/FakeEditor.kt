@@ -113,6 +113,8 @@ class FakeEditor : EditorBridge {
 
     override fun performEditorAction(action: Int) { actions.add(action) }
 
+    override fun selectedText(): CharSequence? = if (selS != selE) text.substring(lo(), hi()) else null
+
     override fun cursorCapsMode(reqModes: Int): Int = getCapsMode(text, lo(), reqModes)
 
     // --- действия пользователя (не клавиатуры)
