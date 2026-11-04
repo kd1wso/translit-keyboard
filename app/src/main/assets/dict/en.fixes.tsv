@@ -1,0 +1,98 @@
+# Common misspellings that one edit can't fix (or words run together).
+# typo<TAB>fix. Typos are removed from the dictionary by tools/build_dicts.py.
+accomodate	accommodate
+acheive	achieve
+adress	address
+alot	a lot
+apparantly	apparently
+arguement	argument
+aswell	as well
+atleast	at least
+basicly	basically
+becuase	because
+begining	beginning
+beleive	believe
+belive	believe
+buisness	business
+calender	calendar
+cemetary	cemetery
+collegue	colleague
+comming	coming
+commited	committed
+completly	completely
+concious	conscious
+definately	definitely
+definatly	definitely
+dissapear	disappear
+dissapoint	disappoint
+eachother	each other
+embarass	embarrass
+enviroment	environment
+everytime	every time
+eveyone	everyone
+existance	existence
+finaly	finally
+foriegn	foreign
+fourty	forty
+freind	friend
+gaurd	guard
+goverment	government
+happend	happened
+ijust	I just
+immediatly	immediately
+independant	independent
+infact	in fact
+inspite	in spite
+intresting	interesting
+iwill	I will
+knowlege	knowledge
+libary	library
+millenium	millennium
+neccessary	necessary
+necesary	necessary
+noone	no one
+noticable	noticeable
+occassion	occasion
+occured	occurred
+occurence	occurrence
+ocurred	occurred
+ofcourse	of course
+persistant	persistent
+posession	possession
+prefered	preferred
+probaly	probably
+realy	really
+recieve	receive
+recomend	recommend
+refered	referred
+relevent	relevant
+religous	religious
+rember	remember
+remeber	remember
+rythm	rhythm
+sentance	sentence
+seperate	separate
+seperately	separately
+similiar	similar
+sincerly	sincerely
+speach	speech
+stoped	stopped
+strenght	strength
+succesful	successful
+sucess	success
+suprise	surprise
+tendancy	tendency
+thankyou	thank you
+thier	their
+threshhold	threshold
+tommorow	tomorrow
+tommorrow	tomorrow
+tomorow	tomorrow
+tounge	tongue
+truely	truly
+untill	until
+usally	usually
+wich	which
+wierd	weird
+writting	writing
+yeild	yield

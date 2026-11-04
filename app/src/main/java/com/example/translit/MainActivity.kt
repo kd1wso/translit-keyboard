@@ -36,7 +36,7 @@ class MainActivity : Activity() {
 
         content.addView(header("Translit Keyboard"))
         content.addView(note("Русская раскладка, печатающая латиницей: «привет» → «privet». " +
-            "Переключение раскладок — клавиша 🌍 на клавиатуре."))
+            "Переключение раскладок — клавиша 🌐 на клавиатуре, настройки — ⚙ над клавишами."))
 
         // --- Активация
         content.addView(section("Активация"))
@@ -201,13 +201,37 @@ class MainActivity : Activity() {
 
         // --- Подсказки и автоисправление
         content.addView(section("Подсказки и автоисправление"))
-        content.addView(note("Работают в ЙЦУКЕН и QWERTY; в транслите подсказки отключены"))
+        content.addView(note("Работают во всех раскладках, включая транслит: словари ~48 тыс. " +
+            "русских и английских слов плюс слова, которые вы печатаете. Опечатка исправляется " +
+            "только при высокой уверенности, настоящие слова не трогаются; ⌫ сразу после " +
+            "исправления возвращает набранное слово. В паролях подсказки и обучение выключены."))
         content.addView(switchRow("Панель подсказок", KbSettings.get(this).suggestionsEnabled) { checked ->
             KbSettings.update(this) { it.copy(suggestionsEnabled = checked) }
         })
         content.addView(switchRow("Автоисправление опечаток", KbSettings.get(this).autocorrect) { checked ->
             KbSettings.update(this) { it.copy(autocorrect = checked) }
         })
+        content.addView(switchRow("Запоминать новые слова", KbSettings.get(this).learnWords) { checked ->
+            KbSettings.update(this) { it.copy(learnWords = checked) }
+        })
+        content.addView(button("Забыть выученные слова") {
+            UserHistory.load(java.io.File(filesDir, "user_history.tsv"))
+            UserHistory.clear()
+            android.widget.Toast.makeText(this, "Выученные слова удалены", android.widget.Toast.LENGTH_SHORT).show()
+        })
+
+        // --- Ввод
+        content.addView(section("Ввод"))
+        content.addView(switchRow("Заглавная в начале предложения", KbSettings.get(this).autoCaps) { checked ->
+            KbSettings.update(this) { it.copy(autoCaps = checked) }
+        })
+        content.addView(switchRow("Точка двойным пробелом", KbSettings.get(this).doubleSpacePeriod) { checked ->
+            KbSettings.update(this) { it.copy(doubleSpacePeriod = checked) }
+        })
+        content.addView(note("Жесты: свайп по пробелу двигает курсор; свайп влево от ⌫ выделяет " +
+            "слова и удаляет их; удержание ⌫ — быстрое удаление; удержание клавиши — варианты " +
+            "(цифры, ё, символы), выбор скольжением; двойное нажатие ⇧ — Caps Lock; " +
+            "удержание 🌐 или пробела — выбор клавиатуры."))
 
         // --- Отклик
         content.addView(section("Отклик клавиш"))

@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.translit"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
     }
 
     buildTypes {
@@ -28,8 +28,19 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { test ->
+            // Скриншоты клавиатуры (Robolectric, при первом запуске качает ~200 МБ) — только по запросу:
+            // ./gradlew testDebugUnitTest -Pscreenshots  →  app/build/screenshots/*.png
+            if (!project.hasProperty("screenshots")) test.exclude("**/ScreenshotTest*")
+        }
+    }
 }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }

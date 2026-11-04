@@ -15,7 +15,10 @@ object KbSettings {
         val sound: Boolean,
         val layoutName: String, // TRANSLIT / CYRILLIC / LATIN
         val autocorrect: Boolean,
-        val suggestionsEnabled: Boolean
+        val suggestionsEnabled: Boolean,
+        val autoCaps: Boolean = true,          // заглавная в начале предложения
+        val doubleSpacePeriod: Boolean = true, // «. » двойным пробелом
+        val learnWords: Boolean = true         // запоминать новые слова
     )
 
     data class Palette(
@@ -100,7 +103,10 @@ object KbSettings {
             sound = p.getBoolean("sound", false),
             layoutName = p.getString("layout", "TRANSLIT") ?: "TRANSLIT",
             autocorrect = p.getBoolean("autocorrect", true),
-            suggestionsEnabled = p.getBoolean("suggestions", true)
+            suggestionsEnabled = p.getBoolean("suggestions", true),
+            autoCaps = p.getBoolean("autoCaps", true),
+            doubleSpacePeriod = p.getBoolean("doubleSpacePeriod", true),
+            learnWords = p.getBoolean("learnWords", true)
         )
     }
 
@@ -116,6 +122,9 @@ object KbSettings {
             .putString("layout", st.layoutName)
             .putBoolean("autocorrect", st.autocorrect)
             .putBoolean("suggestions", st.suggestionsEnabled)
+            .putBoolean("autoCaps", st.autoCaps)
+            .putBoolean("doubleSpacePeriod", st.doubleSpacePeriod)
+            .putBoolean("learnWords", st.learnWords)
         if (st.accentOverride != null) e.putInt("accentOverride", st.accentOverride)
         else e.remove("accentOverride")
         e.apply()

@@ -1,0 +1,12 @@
+Словари ru.tsv и en.tsv построены скриптом tools/build_dicts.py из частотных списков
+FrequencyWords — https://github.com/hermitdave/FrequencyWords, © 2016 Hermit Dave,
+по данным OpenSubtitles 2018 — http://opus.nlpl.eu/OpenSubtitles2018.php
+
+Лицензия содержимого: CC BY-SA 4.0 — https://creativecommons.org/licenses/by-sa/4.0/
+
+Изменения: отобраны слова из букв алфавита, ё приведена к е (написание сохранено),
+восстановлены английские сокращения (don't, I'm), удалены частые опечатки (см. *.fixes.tsv),
+добавлены разговорные слова и сокращения из переписки, грубые слова помечены (не подсказываются).
+Производные словари ru.tsv и en.tsv распространяются на тех же условиях — CC BY-SA 4.0.
+
+Таблицы ru.fixes.tsv и en.fixes.tsv составлены для этого проекта (лицензия проекта — MIT).

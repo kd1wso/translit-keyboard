@@ -3,14 +3,42 @@ package com.example.translit
 enum class TranslitMode {
     COLLOQUIAL, PASSPORT;
 
-    fun translit(ch: Char, upper: Boolean): String {
-        val lower = ch.lowercaseChar()
-        val out = when (this) {
-            COLLOQUIAL -> colloquial[lower]
-            PASSPORT -> passport[lower]
+    private val table: Map<Char, String>
+        get() = if (this == COLLOQUIAL) colloquial else passport
+
+    /**
+     * Транслитерация одной буквы.
+     * [upper] — буква заглавная; [allCaps] — слово набирается целиком заглавными
+     * (Caps Lock или соседние буквы заглавные): «Ж» → «ZH», а не «Zh».
+     */
+    fun translit(ch: Char, upper: Boolean, allCaps: Boolean = false): String {
+        val out = table[ch.lowercaseChar()]
+            ?: return if (upper) ch.uppercaseChar().toString() else ch.toString()
+        return when {
+            out.isEmpty() -> out
+            upper && allCaps -> out.uppercase()
+            upper -> out[0].uppercaseChar() + out.substring(1)
+            else -> out
         }
-        if (out == null) return if (upper) ch.uppercaseChar().toString() else ch.toString()
-        return if (upper && out.isNotEmpty()) out[0].uppercaseChar() + out.substring(1) else out
+    }
+
+    /**
+     * Транслитерация слова с учётом регистра: «Женя» → «Zhenya», «ЖЕНЯ» → «ZHENYA».
+     * [locked] — для каждой буквы: была ли она набрана с Caps Lock.
+     */
+    fun translitWord(src: CharSequence, locked: List<Boolean>? = null): String {
+        val sb = StringBuilder(src.length + 4)
+        for (i in src.indices) {
+            val c = src[i]
+            val upper = c.isUpperCase()
+            val allCaps = upper && (
+                (locked != null && i < locked.size && locked[i]) ||
+                    (i > 0 && src[i - 1].isLetter() && src[i - 1].isUpperCase()) ||
+                    (i + 1 < src.length && src[i + 1].isLetter() && src[i + 1].isUpperCase())
+                )
+            sb.append(translit(c, upper, allCaps))
+        }
+        return sb.toString()
     }
 
     companion object {
