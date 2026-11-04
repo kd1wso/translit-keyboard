@@ -67,9 +67,11 @@ adb shell ime set com.example.translit/.TranslitKeyboardService
 ## Тесты
 
 ```bash
-./gradlew testDebugUnitTest                 # логика ввода, автозамена, транслит, словари
-./gradlew testDebugUnitTest -Pscreenshots   # + скриншоты клавиатуры (Robolectric) в app/build/screenshots
+./gradlew testDebugUnitTest                 # логика ввода, автозамена, транслит, словари, высота окна
+./gradlew testDebugUnitTest -Pscreenshots   # + скриншоты клавиатуры в app/build/screenshots
 ```
+
+Тесты окна клавиатуры используют Robolectric: при первом запуске Gradle скачает его Android-библиотеки.
 
 ## Структура
 

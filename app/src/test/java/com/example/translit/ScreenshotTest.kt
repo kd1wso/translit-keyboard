@@ -73,9 +73,10 @@ class ScreenshotTest {
     private val width get() = svc.resources.displayMetrics.widthPixels
 
     private fun measure() {
+        // как окно IME на телефоне: «не выше экрана»
         root.measure(
             View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            View.MeasureSpec.makeMeasureSpec(svc.resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST)
         )
         root.layout(0, 0, width, root.measuredHeight)
     }

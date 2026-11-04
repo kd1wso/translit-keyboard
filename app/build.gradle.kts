@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.translit"
         minSdk = 24
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.3.1"
     }
 
     buildTypes {
@@ -32,7 +32,7 @@ android {
         unitTests.isReturnDefaultValues = true
         unitTests.isIncludeAndroidResources = true
         unitTests.all { test ->
-            // Скриншоты клавиатуры (Robolectric, при первом запуске качает ~200 МБ) — только по запросу:
+            // Скриншоты клавиатуры (Robolectric, нативная графика) — только по запросу:
             // ./gradlew testDebugUnitTest -Pscreenshots  →  app/build/screenshots/*.png
             if (!project.hasProperty("screenshots")) test.exclude("**/ScreenshotTest*")
         }

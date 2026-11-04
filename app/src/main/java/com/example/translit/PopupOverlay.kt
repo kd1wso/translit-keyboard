@@ -55,6 +55,17 @@ class PopupOverlay(context: Context) : View(context) {
         panel = null
     }
 
+    /**
+     * Слой не должен влиять на высоту клавиатуры: окно IME меряет вид «не больше экрана»,
+     * и обычный View занял бы весь экран — клавиатура уползала бы наверх и закрывала чат.
+     * Размер слоя задаёт FrameLayout (MATCH_PARENT) по высоте самой клавиатуры.
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val w = if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.EXACTLY) MeasureSpec.getSize(widthMeasureSpec) else 0
+        val h = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) MeasureSpec.getSize(heightMeasureSpec) else 0
+        setMeasuredDimension(w, h)
+    }
+
     override fun onDraw(c: Canvas) {
         val pal = palette ?: return
         val b = bubble

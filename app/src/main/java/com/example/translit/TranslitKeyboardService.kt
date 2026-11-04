@@ -14,6 +14,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.text.InputType
 import android.util.TypedValue
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
@@ -103,7 +104,7 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         kv.setPadding(padH, dp(2f).toInt(), padH, dp(4f).toInt())
         col.addView(s, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44f).toInt()))
         col.addView(kv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        frame.addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        frame.addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         frame.addView(ov, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         col.setPadding(0, 0, 0, navBarHeight())
         ViewCompat.setOnApplyWindowInsetsListener(frame) { _, insets ->
@@ -326,6 +327,7 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         }
         kv.spaceLabel = spaceLabel()
         kv.setRows(rows)
+        kv.rowHeight = rowHeightPx(rows.size)
     }
 
     private fun applyTheme() {
@@ -335,9 +337,24 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         keyboard?.let {
             it.palette = pal
             it.fontScale = st.fontSize
-            it.rowHeight = dp(31f + 22f * st.keyHeight).toInt()
+            it.rowHeight = rowHeightPx(it.rows.size)
         }
     }
+
+    /**
+     * Высота ряда клавиш из настроек, но клавиатура целиком — не выше половины экрана
+     * (важно в альбомной ориентации), чтобы переписка оставалась видна.
+     */
+    private fun rowHeightPx(rows: Int): Int {
+        val want = dp(31f + 22f * st.keyHeight)
+        val screenH = resources.displayMetrics.heightPixels.toFloat()
+        val budget = screenH * 0.5f - dp(44f) - dp(6f)
+        val cap = budget / maxOf(rows, 4)
+        return minOf(want, cap).coerceAtLeast(dp(30f)).toInt()
+    }
+
+    /** Без полноэкранного режима ввода: приложение (чат) всегда видно над клавиатурой. */
+    override fun onEvaluateFullscreenMode(): Boolean = false
 
     private fun onEngineChanged() {
         keyboard?.shiftState = engine.shift
