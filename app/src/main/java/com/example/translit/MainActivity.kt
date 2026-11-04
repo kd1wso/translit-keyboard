@@ -21,6 +21,8 @@ import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import android.view.inputmethod.InputMethodManager
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 class MainActivity : Activity() {
 
@@ -297,8 +299,17 @@ class MainActivity : Activity() {
             KbSettings.update(this) { it.copy(sound = checked) }
         })
 
-        scroll.setBackgroundColor(KbSettings.palette(KbSettings.get(this)).bg)
+        val bg = KbSettings.palette(KbSettings.get(this)).bg
+        scroll.setBackgroundColor(bg)
         setContentView(scroll)
+        SystemBars.style(window, bg)
+        // Android 15+ рисует экран и под панелью навигации — последний пункт не должен под ней прятаться
+        scroll.clipToPadding = false
+        ViewCompat.setOnApplyWindowInsetsListener(scroll) { v, insets ->
+            val nav = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            v.setPadding(nav.left, 0, nav.right, nav.bottom)
+            insets
+        }
     }
 
     private fun renderAccents() {

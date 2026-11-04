@@ -2,6 +2,7 @@ package com.example.translit
 
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
+import androidx.core.view.WindowCompat
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -48,5 +49,22 @@ class InputViewTest {
     fun numberPadKeepsItsOwnHeight() {
         val f = ImeFixture(EditorInfo().apply { inputType = InputType.TYPE_CLASS_NUMBER })
         assertTrue(f.root.measuredHeight < f.screenH / 2)
+    }
+
+    @Test
+    fun navigationBarMatchesTheme() {
+        val f = ImeFixture(text())
+        val w = f.svc.window.window!!
+        val dark = KbSettings.palette(KbSettings.get(f.svc)).bg
+        @Suppress("DEPRECATION")
+        assertEquals(dark, w.navigationBarColor)
+        assertFalse(WindowCompat.getInsetsController(w, w.decorView).isAppearanceLightNavigationBars)
+
+        KbSettings.update(f.svc) { it.copy(themeId = "light") }
+        f.svc.onStartInputView(text(), false)
+        val light = KbSettings.palette(KbSettings.get(f.svc)).bg
+        @Suppress("DEPRECATION")
+        assertEquals(light, w.navigationBarColor)
+        assertTrue(WindowCompat.getInsetsController(w, w.decorView).isAppearanceLightNavigationBars)
     }
 }

@@ -414,6 +414,7 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun applyTheme() {
+        window?.window?.let { SystemBars.style(it, pal.bg) }
         root?.setBackgroundColor(pal.bg)
         column?.setBackgroundColor(pal.bg)
         strip?.applyTheme(pal, st.fontSize)
