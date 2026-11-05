@@ -80,6 +80,12 @@ class InputEngine(private val ed: EditorBridge) {
         /** [onSwitchLanguage]: вернуть раскладку, которая была до исправления раскладки. */
         const val SWITCH_BACK = "back"
 
+        /** Подсказки-действия перевода (слово в [Chip.word]). */
+        const val ACTION_TRANSLATE = "TRANSLATE"
+        const val ACTION_CLIPBOARD = "CLIPBOARD"
+        const val LABEL_TRANSLATE = "🌐 перевести"
+        const val LABEL_CLIPBOARD = "📋 перевести скопированное"
+
         private const val OPENERS = "([{«\"'„“‘<"
         private const val CORRECTING_SEPARATORS = ".,!?;:)»\"…"
         private const val SWAP_PUNCT = ".,!?"
@@ -180,6 +186,19 @@ class InputEngine(private val ed: EditorBridge) {
     var actionTranslit: TranslitMode = TranslitMode.COLLOQUIAL
     /** Переключить раскладку на язык ("ru"/"en") после исправления раскладки; [SWITCH_BACK] — отмена. */
     var onSwitchLanguage: ((String) -> Unit)? = null
+    /** Перевести выделенный текст; null — подсказки «перевести» нет. */
+    var onTranslateRequest: ((String) -> Unit)? = null
+    /** Перевести скопированный текст (подсказка [clipOffer]). */
+    var onClipboardTranslate: (() -> Unit)? = null
+    /** Предложить перевести только что скопированный текст — пока не начали печатать. */
+    var clipOffer = false
+        private set
+
+    fun offerClipboard(on: Boolean) {
+        if (clipOffer == on) return
+        clipOffer = on
+        refresh()
+    }
 
     var shift = Shift.OFF
         private set
@@ -644,6 +663,7 @@ class InputEngine(private val ed: EditorBridge) {
     // ================================================================ ввод букв
 
     fun onLetter(ch: Char) {
+        clipOfferOff()
         val upper = shift != Shift.OFF
         val lock = shift == Shift.LOCKED
         val c = if (upper) ch.uppercaseChar() else ch
@@ -700,9 +720,15 @@ class InputEngine(private val ed: EditorBridge) {
         directOut = out
     }
 
+    /** Начали печатать — подсказку «перевести скопированное» убираем (refresh() сделает сама операция). */
+    private fun clipOfferOff() {
+        clipOffer = false
+    }
+
     /** Любой текст с клавиши: буква, символ, цифра, эмодзи, «.com». */
     fun onText(text: String) {
         if (text.isEmpty()) return
+        clipOfferOff()
         val ch = if (text.length == 1) text[0] else null
         if (ch != null && ch.isLetter()) {
             onLetter(ch)
@@ -794,6 +820,19 @@ class InputEngine(private val ed: EditorBridge) {
             context.clear()
             pushContext(key)
         }
+        updateAutoCaps()
+        refresh()
+    }
+
+    /** Завершить слово с автоисправлением, как перед отправкой, но без пробела. */
+    fun finishWordAutocorrect() {
+        if (word.isNotEmpty()) batch { finishWord(true, "") }
+        if (composingActive) {
+            ed.finishComposingText()
+            composingActive = false
+        }
+        clearDirect()
+        lastCorrection = null
         updateAutoCaps()
         refresh()
     }
@@ -1052,9 +1091,20 @@ class InputEngine(private val ed: EditorBridge) {
     fun pickChip(index: Int) {
         val chip = chips.getOrNull(index) ?: return
         if (chip.kind == ChipKind.ACTION) {
-            applyAction(chip)
+            when (chip.word) {
+                ACTION_CLIPBOARD -> {
+                    offerClipboard(false)
+                    onClipboardTranslate?.invoke()
+                }
+                ACTION_TRANSLATE -> {
+                    val sel = ed.selectedText()?.toString()
+                    if (!sel.isNullOrBlank()) onTranslateRequest?.invoke(sel)
+                }
+                else -> applyAction(chip)
+            }
             return
         }
+        clipOfferOff()
         batch {
             when (chip.kind) {
                 ChipKind.TYPED, ChipKind.CORRECTION, ChipKind.WORD -> {
@@ -1155,12 +1205,24 @@ class InputEngine(private val ed: EditorBridge) {
         }
         val sel = ed.selectedText()?.toString() ?: return emptyList()
         if (sel.isEmpty() || sel.length > MAX_SELECTION) return emptyList()
-        return TextActions.available(sel).map { Chip(it.label, ChipKind.ACTION, it.name) }
+        val out = ArrayList<Chip>(4)
+        if (onTranslateRequest != null && profile.kind == FieldProfile.Kind.TEXT && sel.any { it.isLetter() }) {
+            out.add(Chip(LABEL_TRANSLATE, ChipKind.ACTION, ACTION_TRANSLATE))
+        }
+        for (a in TextActions.available(sel)) if (out.size < 4) out.add(Chip(a.label, ChipKind.ACTION, a.name))
+        return out
     }
 
     private fun computeChips(): List<Chip> {
         chipLayoutFix = null
         if (word.isEmpty() && directSrc.isEmpty() && hasSelection()) return selectionChips()
+        if (clipOffer && word.isEmpty() && directSrc.isEmpty() && onClipboardTranslate != null) {
+            return listOf(Chip(LABEL_CLIPBOARD, ChipKind.ACTION, ACTION_CLIPBOARD)) + wordChips().take(2)
+        }
+        return wordChips()
+    }
+
+    private fun wordChips(): List<Chip> {
         if (!settings.suggestions || !profile.suggestions || lang.isEmpty()) return emptyList()
         if (word.isNotEmpty()) {
             val typed = word.toString()

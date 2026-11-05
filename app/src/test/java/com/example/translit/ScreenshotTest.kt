@@ -42,7 +42,9 @@ class ScreenshotTest {
         if (ms > 0) l.idleFor(Duration.ofMillis(ms)) else l.idle()
     }
 
-    private fun start(info: EditorInfo) {
+    private var field: TranslateServiceTest.AppField? = null
+
+    private fun start(info: EditorInfo, withField: Boolean = false) {
         svc = Robolectric.buildService(TranslitKeyboardService::class.java).create().get()
         val t0 = System.currentTimeMillis()
         while (!(SuggestionEngine.isLoaded("ru") && SuggestionEngine.isLoaded("en")) &&
@@ -50,6 +52,9 @@ class ScreenshotTest {
         ) Thread.sleep(50)
         Thread.sleep(300)
         idle()
+        if (withField) {
+            field = TranslateServiceTest.AppField(View(svc), svc).also { svc.testInputConnection = it }
+        }
         root = svc.onCreateInputView()
         svc.onStartInput(info, false)
         svc.onStartInputView(info, false)
@@ -115,6 +120,44 @@ class ScreenshotTest {
     }
 
     private fun tapChar(c: String) = tap { it.type == KeyboardView.Type.CHAR && it.text == c }
+
+    private fun views(v: View, out: MutableList<View> = ArrayList()): List<View> {
+        out.add(v)
+        if (v is ViewGroup) for (i in 0 until v.childCount) views(v.getChildAt(i), out)
+        return out
+    }
+
+    /** Нажать кнопку панели или строки подсказок по надписи / описанию. */
+    private fun click(label: String) {
+        val v = views(root).firstOrNull {
+            it.visibility == View.VISIBLE && ((it is TextView && it.text.toString() == label) || it.contentDescription == label)
+        } ?: throw AssertionError("нет «$label» среди ${texts(root)}")
+        v.performClick()
+        idle()
+        measure()
+    }
+
+    /** Перевод без сети: известные фразы, модели «скачан» только английский. */
+    private fun <T> withFakeTranslation(online: FakeOnline, body: () -> T): T {
+        val saved = listOf(TranslationManager.offline, TranslationManager.online, TranslationManager.runner, TranslationManager.slowRunner)
+        TranslationManager.offline = FakeOffline()
+        TranslationManager.online = online::translate
+        TranslationManager.runner = { it.run() }
+        TranslationManager.slowRunner = { it.run() }
+        TranslationManager.clearMemoryCache()
+        try {
+            return body()
+        } finally {
+            @Suppress("UNCHECKED_CAST")
+            run {
+                TranslationManager.offline = saved[0] as OfflineEngine
+                TranslationManager.online = saved[1] as (String, String?, String) -> TranslationManager.Result?
+                TranslationManager.runner = saved[2] as (Runnable) -> Unit
+                TranslationManager.slowRunner = saved[3] as (Runnable) -> Unit
+            }
+            TranslationManager.clearMemoryCache()
+        }
+    }
 
     private fun textField() = EditorInfo().apply {
         inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
@@ -211,6 +254,46 @@ class ScreenshotTest {
         KbSettings.update(app) { it.copy(layoutName = "CYRILLIC", ruLayout = KbSettings.RU_YAVERTY) }
         start(textField())
         shot("13_yaverty")
+    }
+
+    @Test
+    fun translateLive() {
+        val online = FakeOnline().apply { phrases["en:Привет, как дела"] = "Hi, how are you" }
+        withFakeTranslation(online) {
+            start(textField(), withField = true)
+            click("Перевод")
+            for (c in "привет, как дела") {
+                when (c) {
+                    ' ' -> tap { it.type == KeyboardView.Type.SPACE }
+                    ',' -> svc.onKey(KeyboardView.Key(KeyboardView.Type.CHAR, ",")).also { idle(60) }
+                    else -> tapChar(c.toString())
+                }
+            }
+            idle(LiveTranslation.DEBOUNCE_MS + 100)
+            measure()
+            assertTrue(field!!.text, field!!.text == "Hi, how are you")
+            shot("15_translate_live")
+            click("Русский → English ▾")
+            shot("16_translate_languages")
+        }
+    }
+
+    @Test
+    fun translateSelection() {
+        val online = FakeOnline().apply {
+            phrases["ru:See you tomorrow at the station!"] = "Увидимся завтра на вокзале!"
+        }
+        withFakeTranslation(online) {
+            start(textField(), withField = true)
+            field!!.set("See you tomorrow at the station!", 0, 32)
+            idle()
+            measure()
+            shot("17_selection_chip")
+            click(InputEngine.LABEL_TRANSLATE)
+            val all = texts(root)
+            assertTrue(all.toString(), all.contains("Увидимся завтра на вокзале!"))
+            shot("18_translate_result")
+        }
     }
 
     @Test

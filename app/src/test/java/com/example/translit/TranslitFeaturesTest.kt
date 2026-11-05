@@ -1,6 +1,7 @@
 package com.example.translit
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -222,6 +223,37 @@ class TranslitFeaturesTest {
         h.pick("⇄ раскладка")
         assertEquals("так привет всем", h.text)
         assertEquals("привет", h.selection)
+    }
+
+    @Test
+    fun selectionTranslateChip() {
+        val h = Harness(lang = "ru")
+        val asked = ArrayList<String>()
+        h.eng.onTranslateRequest = { asked.add(it) }
+        h.select("Привет, мир!")
+        assertEquals(listOf(InputEngine.LABEL_TRANSLATE, "→ латиница", "⇄ раскладка", "→ ссылка"), h.chips)
+        h.pick(InputEngine.LABEL_TRANSLATE)
+        assertEquals(listOf("Привет, мир!"), asked)
+        assertEquals("текст не тронут", "Привет, мир!", h.text)
+        h.select("12:30")
+        assertFalse("без букв переводить нечего", h.chips.contains(InputEngine.LABEL_TRANSLATE))
+    }
+
+    @Test
+    fun clipboardChipUntilTyping() {
+        val h = Harness(lang = "ru")
+        var asked = 0
+        h.eng.onClipboardTranslate = { asked++ }
+        h.eng.offerClipboard(true)
+        assertEquals(InputEngine.LABEL_CLIPBOARD, h.chips.first())
+        h.pick(InputEngine.LABEL_CLIPBOARD)
+        assertEquals(1, asked)
+        assertFalse(h.chips.contains(InputEngine.LABEL_CLIPBOARD))
+        h.eng.offerClipboard(true)
+        h.type("п")
+        assertFalse("начали печатать — подсказка ушла", h.chips.contains(InputEngine.LABEL_CLIPBOARD))
+        h.type("⌫")
+        assertFalse(h.chips.contains(InputEngine.LABEL_CLIPBOARD))
     }
 
     @Test

@@ -30,8 +30,19 @@ object KbSettings {
         val cycleLatin: Boolean = true,
         val layoutFix: Boolean = true,         // ghbdtn → привет
         val perAppLayout: Boolean = true,      // своя раскладка в каждом приложении
-        val customTable: String = ""           // своя таблица транслита: строки «а=a»
-    )
+        val customTable: String = "",          // своя таблица транслита: строки «а=a»
+        val translateMode: String = "AUTO",    // TranslationManager.Mode: AUTO / OFFLINE / ONLINE
+        val translateTarget: String = "en",    // на какой язык переводить то, что пишете
+        val translateWifiOnly: Boolean = true, // скачивать языки только по Wi-Fi
+        val clipTranslate: Boolean = true      // предлагать перевести скопированное
+    ) {
+        val translationMode: TranslationManager.Mode
+            get() = try {
+                TranslationManager.Mode.valueOf(translateMode)
+            } catch (_: Exception) {
+                TranslationManager.Mode.AUTO
+            }
+    }
 
     data class Palette(
         val bg: Int, val keyTop: Int, val keyBottom: Int, val keyStroke: Int,
@@ -125,7 +136,11 @@ object KbSettings {
             cycleLatin = p.getBoolean("cycleLatin", true),
             layoutFix = p.getBoolean("layoutFix", true),
             perAppLayout = p.getBoolean("perAppLayout", true),
-            customTable = p.getString("customTable", "") ?: ""
+            customTable = p.getString("customTable", "") ?: "",
+            translateMode = p.getString("translateMode", "AUTO") ?: "AUTO",
+            translateTarget = p.getString("translateTarget", "en") ?: "en",
+            translateWifiOnly = p.getBoolean("translateWifiOnly", true),
+            clipTranslate = p.getBoolean("clipTranslate", true)
         )
     }
 
@@ -152,6 +167,10 @@ object KbSettings {
             .putBoolean("layoutFix", st.layoutFix)
             .putBoolean("perAppLayout", st.perAppLayout)
             .putString("customTable", st.customTable)
+            .putString("translateMode", st.translateMode)
+            .putString("translateTarget", st.translateTarget)
+            .putBoolean("translateWifiOnly", st.translateWifiOnly)
+            .putBoolean("clipTranslate", st.clipTranslate)
         if (st.accentOverride != null) e.putInt("accentOverride", st.accentOverride)
         else e.remove("accentOverride")
         e.apply()

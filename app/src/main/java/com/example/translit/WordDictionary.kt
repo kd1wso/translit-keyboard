@@ -18,6 +18,13 @@ class WordDictionary private constructor(
 ) {
     val size: Int get() = keys.size
 
+    /** Сумма частот — чтобы сравнивать слова разных словарей. */
+    val total: Long by lazy {
+        var t = 0L
+        for (c in counts) t += c
+        t
+    }
+
     fun keyAt(i: Int): String = keys[i]
     fun countAt(i: Int): Int = counts[i]
     fun isBlockedAt(i: Int): Boolean = blocked[i]

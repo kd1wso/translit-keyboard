@@ -196,8 +196,29 @@ object ReverseTranslit {
         return scored.sortedByDescending { it.second }.take(limit).map { it.first }
     }
 
-    /** Текст целиком: слова латиницей → кириллица по словарю, остальное как есть. */
-    fun convertText(text: String, lang: String = "ru"): String {
+    /**
+     * Слово латиницей — русское транслитом или английское? [score] — логарифм отношения
+     * частот (русское прочтение [ru] в русском словаре / слово в английском), от −4 до 4:
+     * «kak» ≈ 4, «no» ≈ 0, «station» ≈ −4. Нет ни там, ни там — 0.
+     */
+    class Vote(val ru: String?, val score: Double, val english: Boolean)
+
+    fun vote(token: String, lang: String = "ru"): Vote {
+        val ru = knownWords(token, null, lang, 1).firstOrNull()
+        val ruCount = if (ru == null) 0 else SuggestionEngine.wordCount(lang, WordDictionary.normalize(ru))
+        val enCount = SuggestionEngine.wordCount("en", WordDictionary.normalize(token))
+        if (ruCount == 0 && enCount == 0) return Vote(null, 0.0, false)
+        val ruTotal = SuggestionEngine.dict(lang).total.coerceAtLeast(1L).toDouble()
+        val enTotal = SuggestionEngine.dict("en").total.coerceAtLeast(1L).toDouble()
+        val s = ln((ruCount + 0.5) / ruTotal) - ln((enCount + 0.5) / enTotal)
+        return Vote(ru, s.coerceIn(-4.0, 4.0), enCount > 0)
+    }
+
+    /**
+     * Текст целиком: слова латиницей → кириллица по словарю, остальное как есть.
+     * [keepEnglish] — английские слова без русского прочтения не трогать («kupil iPhone» → «купил iPhone»).
+     */
+    fun convertText(text: String, lang: String = "ru", keepEnglish: Boolean = false): String {
         val sb = StringBuilder(text.length)
         var i = 0
         while (i < text.length) {
@@ -212,8 +233,14 @@ object ReverseTranslit {
             var j = i
             while (j < text.length && (text[j].lowercaseChar() in 'a'..'z' || text[j] == '\'' || text[j] == '’')) j++
             val token = text.substring(i, j)
-            val word = knownWords(token, null, lang, 1).firstOrNull() ?: live(token, lang)
-            sb.append(caseLike(word, token))
+            if (keepEnglish) {
+                val v = vote(token, lang)
+                if (v.ru == null && v.english) sb.append(token)
+                else sb.append(caseLike(v.ru ?: live(token, lang), token))
+            } else {
+                val word = knownWords(token, null, lang, 1).firstOrNull() ?: live(token, lang)
+                sb.append(caseLike(word, token))
+            }
             i = j
         }
         return sb.toString()

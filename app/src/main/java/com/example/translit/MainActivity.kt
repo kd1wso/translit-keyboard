@@ -277,6 +277,9 @@ class MainActivity : Activity() {
             android.widget.Toast.makeText(this, "Выученные слова удалены", android.widget.Toast.LENGTH_SHORT).show()
         })
 
+        // --- Перевод
+        addTranslationSection(content)
+
         // --- Ввод
         content.addView(section("Ввод"))
         content.addView(switchRow("Заглавная в начале предложения", KbSettings.get(this).autoCaps) { checked ->
@@ -311,6 +314,110 @@ class MainActivity : Activity() {
             insets
         }
     }
+
+    private fun addTranslationSection(content: LinearLayout) {
+        val st = KbSettings.get(this)
+        val offline = TranslationManager.offline
+        content.addView(section("Перевод"))
+        content.addView(note("Значок перевода над клавиатурой. «Набор» — пишете по-русски в строке над " +
+            "клавишами, а в поле сразу появляется перевод; ⏎ вставляет его, следующий ⏎ — отправляет. " +
+            "«Поле» — перевести написанное или выделенное, «Буфер» — скопированное (например, чужое " +
+            "сообщение) на русский. Язык перевода — кнопка с языками на панели."))
+        if (offline.available) {
+            content.addView(radioGroup(listOf(
+                "AUTO" to "Без интернета, если язык скачан, иначе онлайн",
+                "OFFLINE" to "Только без интернета — текст не уходит в сеть",
+                "ONLINE" to "Только онлайн (Google)"
+            ), st.translateMode) { v ->
+                KbSettings.update(this) { it.copy(translateMode = v) }
+            })
+            content.addView(switchRow("Скачивать языки только по Wi‑Fi", st.translateWifiOnly) { checked ->
+                KbSettings.update(this) { it.copy(translateWifiOnly = checked) }
+            })
+        } else {
+            content.addView(note("В этой сборке (lite) перевода без интернета нет — переводит Google онлайн."))
+        }
+        content.addView(switchRow("Предлагать перевести скопированное", st.clipTranslate) { checked ->
+            KbSettings.update(this) { it.copy(clipTranslate = checked) }
+        })
+        if (!offline.available) return
+
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val toggle = button("Языки для перевода без интернета ▾") {}
+        toggle.setOnClickListener {
+            if (list.visibility == View.VISIBLE) {
+                list.visibility = View.GONE
+                toggle.text = "Языки для перевода без интернета ▾"
+            } else {
+                list.visibility = View.VISIBLE
+                toggle.text = "Языки для перевода без интернета ▴"
+                if (list.childCount == 0) fillOfflineLanguages(list)
+            }
+        }
+        content.addView(toggle)
+        content.addView(list)
+    }
+
+    /** Список языков ML Kit: скачать (~30 МБ) или удалить. */
+    private fun fillOfflineLanguages(list: LinearLayout) {
+        val offline = TranslationManager.offline
+        list.addView(note("Каждый язык — около 30 МБ, английский встроен. Перевод идёт через английский: " +
+            "для «русский → немецкий» нужны оба языка."))
+        val rows = HashMap<String, Button>()
+        for ((code, name) in TranslationManager.LANGS) {
+            if (code == "en" || !offline.supports(code)) continue
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(TextView(this).apply {
+                text = name
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                setTextColor(textColor())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            val b = Button(this).apply {
+                text = "…"
+                isAllCaps = false
+                isEnabled = false
+            }
+            row.addView(b, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            rows[code] = b
+            list.addView(row)
+        }
+
+        fun show(code: String, downloaded: Boolean) {
+            val b = rows[code] ?: return
+            b.isEnabled = true
+            b.text = if (downloaded) "Удалить" else "Скачать"
+            b.setOnClickListener {
+                b.isEnabled = false
+                if (downloaded) {
+                    b.text = "Удаляю…"
+                    TranslationManager.background({ offline.delete(code) }) { err ->
+                        if (err != null) toast("Не удалилось: $err")
+                        show(code, err != null)
+                    }
+                } else {
+                    val wifi = KbSettings.get(this).translateWifiOnly
+                    b.text = if (wifi && !TranslationManager.onWifi(this)) "Ждёт Wi‑Fi…" else "Скачиваю…"
+                    TranslationManager.background({ offline.download(listOf(code), wifi) }) { err ->
+                        if (err != null) toast("Не скачалось: $err")
+                        else TranslationManager.clearMemoryCache()
+                        show(code, err == null)
+                    }
+                }
+            }
+        }
+        TranslationManager.background({ offline.downloaded() }) { have ->
+            for (code in rows.keys) show(code, code in have)
+        }
+    }
+
+    private fun toast(msg: String) = android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show()
 
     private fun renderAccents() {
         accentRow.removeAllViews()

@@ -1,9 +1,9 @@
 package com.example.translit
 
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
 import android.content.Intent
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
 import android.media.AudioManager
 import android.os.Build
@@ -13,23 +13,19 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.text.InputType
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.example.translit.KeyboardLayoutManager.Page
 import java.io.File
 import java.util.concurrent.Executors
-import kotlin.concurrent.thread
 
 class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
 
@@ -37,7 +33,12 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private lateinit var st: KbSettings.State
     private lateinit var pal: KbSettings.Palette
-    private lateinit var engine: InputEngine
+    /** Ввод в поле приложения. */
+    private lateinit var mainEngine: InputEngine
+    /** Режим «Набор» с переводом: клавиши идут в строку панели перевода. */
+    private var live: LiveTranslation? = null
+    /** Кому идут клавиши: строке перевода или полю. */
+    private val engine: InputEngine get() = live?.engine ?: mainEngine
 
     private var layout = Layout.TRANSLIT
     private var lastDefaultLayout: String? = null
@@ -56,14 +57,20 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
     private var strip: SuggestionStrip? = null
     private var keyboard: KeyboardView? = null
     private var overlay: PopupOverlay? = null
-    private var translatePanel: LinearLayout? = null
-    private var translatePreview: TextView? = null
-    private var translateThread: Thread? = null
+    private var panel: TranslatePanel? = null
+    /** Язык текущей раскладки (ru, en…). */
+    private var layoutLang = "ru"
 
     private val handler = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
     private var vibrator: Vibrator? = null
     private var audio: AudioManager? = null
+
+    /** Поле ввода для тестов (на телефоне — поле приложения от системы). */
+    internal var testInputConnection: InputConnection? = null
+
+    override fun getCurrentInputConnection(): InputConnection? =
+        testInputConnection ?: super.getCurrentInputConnection()
 
     // ================================================================ жизненный цикл
 
@@ -71,9 +78,16 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         super.onCreate()
         st = KbSettings.get(this)
         pal = KbSettings.palette(st)
-        engine = InputEngine(IcBridge())
-        engine.listener = { onEngineChanged() }
-        engine.onSwitchLanguage = { target -> switchForFix(target) }
+        mainEngine = InputEngine(IcBridge())
+        mainEngine.listener = { onEngineChanged() }
+        mainEngine.onSwitchLanguage = { target -> switchForFix(target) }
+        mainEngine.onTranslateRequest = { text -> haptic(null); translateText(text, Source.SELECTION) }
+        mainEngine.onClipboardTranslate = { haptic(null); translateClipboard() }
+        clipboard = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager
+        try {
+            clipboard?.addPrimaryClipChangedListener(clipListener)
+        } catch (_: Exception) {
+        }
         layout = layoutFromName(st.layoutName)
         lastDefaultLayout = st.layoutName
         applySettingsToEngine()
@@ -87,6 +101,12 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
     }
 
     override fun onDestroy() {
+        try {
+            clipboard?.removePrimaryClipChangedListener(clipListener)
+        } catch (_: Exception) {
+        }
+        live?.close()
+        live = null
         UserHistory.saveIfDirty()
         executor.shutdown()
         super.onDestroy()
@@ -98,7 +118,7 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         val s = SuggestionStrip(
             this,
             onSettings = { haptic(null); openSettings() },
-            onTranslate = { haptic(null); openTranslate() },
+            onTranslate = { haptic(null); toggleTranslate() },
             onPick = { i -> haptic(null); engine.pickChip(i) }
         )
         val kv = KeyboardView(this)
@@ -123,7 +143,10 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         strip = s
         keyboard = kv
         overlay = ov
-        translatePanel = null
+        live?.close()
+        live = null
+        oneShot = null
+        panel = null
         applyTheme()
         rebuildKeys()
         onEngineChanged()
@@ -139,7 +162,7 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         super.onStartInput(attribute, restarting)
         val info = attribute ?: EditorInfo()
         profile = profileFor(info)
-        engine.startInput(profile, info.initialSelStart, info.initialSelEnd)
+        mainEngine.startInput(profile, info.initialSelStart, info.initialSelEnd)
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
@@ -160,12 +183,15 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
             FieldProfile.Kind.PHONE -> Page.PHONE
             else -> Page.LETTERS
         }
-        closeTranslate()
+        // то же поле заново (приложение очистило его после отправки) — панель перевода остаётся
+        if (restarting && panel != null && profile.kind == FieldProfile.Kind.TEXT) live?.onFieldUpdate()
+        else closeTranslate()
         applySettingsToEngine()
         applyLayoutToEngine()
         applyTheme()
         rebuildKeys()
         onEngineChanged()
+        maybeOfferClip()
         executor.execute { SuggestionEngine.loadExtraWords(this) }
     }
 
@@ -174,11 +200,13 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         candidatesStart: Int, candidatesEnd: Int
     ) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
-        engine.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        mainEngine.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        live?.onFieldUpdate()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
-        engine.finishComposing()
+        closeTranslate()
+        mainEngine.finishComposing()
         keyboard?.cancelTouches()
         super.onFinishInputView(finishingInput)
         executor.execute { UserHistory.saveIfDirty() }
@@ -286,7 +314,7 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
     // ================================================================ раскладки
 
     private fun applySettingsToEngine() {
-        engine.settings = EngineSettings(
+        val es = EngineSettings(
             autocorrect = st.autocorrect,
             suggestions = st.suggestionsEnabled,
             learn = st.learnWords,
@@ -295,7 +323,10 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
             layoutFix = st.layoutFix
         )
         TranslitMode.customTable = TranslitMode.parseCustom(st.customTable)
-        engine.actionTranslit = st.translitMode
+        for (e in listOfNotNull(mainEngine, live?.engine)) {
+            e.settings = es
+            e.actionTranslit = st.translitMode
+        }
     }
 
     private fun ruLettersDef(): KeyboardLayoutManager.LayoutDef =
@@ -326,16 +357,29 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         val prox = proximityCache.getOrPut(def.id + "/" + def.rows.hashCode()) { KeyboardLayoutManager.proximity(def) }
         val yaverty = st.ruLayout == KbSettings.RU_YAVERTY
         // латиница → русский — только по ЙЦУКЕН (в ЯВЕРТЫ «privet» — это и есть «привет» транслитом)
-        engine.layoutFixMode = when (layout) {
+        val fixMode = when (layout) {
             Layout.TRANSLIT, Layout.CYRILLIC -> if (yaverty) 2 else 1
             Layout.LATIN, Layout.REVERSE -> if (yaverty) 0 else 1
             Layout.CUSTOM -> 0
         }
-        engine.fixRuRender = if (russianLayout() == Layout.TRANSLIT) st.translitMode else null
-        engine.configure(
+        val langChanged = lang != layoutLang
+        layoutLang = lang
+        mainEngine.layoutFixMode = fixMode
+        mainEngine.fixRuRender = if (russianLayout() == Layout.TRANSLIT) st.translitMode else null
+        mainEngine.configure(
             lang, if (layout == Layout.TRANSLIT) st.translitMode else null, prox,
             reverse = layout == Layout.REVERSE
         )
+        live?.let { l ->
+            // в строке перевода — всегда кириллица (транслит не нужен: в поле уйдёт перевод)
+            l.engine.layoutFixMode = fixMode
+            l.engine.fixRuRender = null
+            l.engine.configure(lang, null, prox, reverse = layout == Layout.REVERSE)
+            if (langChanged) {
+                l.retranslate()
+                panel?.takeIf { it.mode == TranslatePanel.Mode.LIVE }?.showLive(liveTitle(), liveHint())
+            }
+        }
     }
 
     /** Исправление раскладки просит переключиться на язык слова (или вернуть прежнюю раскладку). */
@@ -380,7 +424,9 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         rememberLayout()
     }
 
-    private fun spaceLabel(): String = when (layout) {
+    private fun spaceLabel(): String = if (live != null) {
+        layoutLang.uppercase() + " → " + st.translateTarget.uppercase()
+    } else when (layout) {
         Layout.TRANSLIT -> st.translitMode.spaceLabel
         Layout.CYRILLIC -> "русский"
         Layout.REVERSE -> "lat → рус"
@@ -418,6 +464,7 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         root?.setBackgroundColor(pal.bg)
         column?.setBackgroundColor(pal.bg)
         strip?.applyTheme(pal, st.fontSize)
+        panel?.applyTheme(pal, st.fontSize)
         keyboard?.let {
             it.palette = pal
             it.fontScale = st.fontSize
@@ -441,11 +488,15 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
     override fun onEvaluateFullscreenMode(): Boolean = false
 
     private fun onEngineChanged() {
-        keyboard?.shiftState = engine.shift
-        strip?.setChips(
-            engine.chips,
-            showTranslate = layout != Layout.TRANSLIT && profile.kind == FieldProfile.Kind.TEXT
-        )
+        val e = engine
+        keyboard?.shiftState = e.shift
+        strip?.setChips(e.chips, showTranslate = profile.kind == FieldProfile.Kind.TEXT, translateActive = panel != null)
+        val l = live ?: return
+        val p = panel ?: return
+        if (p.mode != TranslatePanel.Mode.LIVE) return
+        val b = l.buffer
+        p.setLiveText(b.text.toString(), b.selS, b.compS, b.compE)
+        p.setLiveStatus(liveStatus(l), l.state == LiveTranslation.State.ERROR, l.missing)
     }
 
     // ================================================================ клавиши
@@ -459,8 +510,9 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
                 if (t.length == 1 && t[0].isLetter()) engine.onLetter(t[0]) else engine.onText(t)
             }
             KeyboardView.Type.SPACE -> engine.onSpace()
-            KeyboardView.Type.ENTER -> engine.onEnter()
-            KeyboardView.Type.BACKSPACE -> engine.onBackspace()
+            // в режиме перевода ⏎ вставляет перевод; когда строка пуста — обычный ⏎ (отправить)
+            KeyboardView.Type.ENTER -> if (live?.commit() != true) mainEngine.onEnter()
+            KeyboardView.Type.BACKSPACE -> editEngine().onBackspace()
             KeyboardView.Type.MODE -> {
                 page = Page.values()[key.target]
                 rebuildKeys()
@@ -482,14 +534,30 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
     override fun onShiftDown() = engine.onShiftTap()
     override fun onShiftLongPress() = engine.onShiftLongPress()
 
+    /** ⌫ и курсор: в строке перевода, пока в ней есть текст, иначе — в поле. */
+    private fun editEngine(): InputEngine = live?.takeIf { !it.isEmpty }?.engine ?: mainEngine
+
+    private var swipeEngine: InputEngine? = null
+
     override fun onBackspaceRepeat(count: Int) {
-        if (count <= 20) engine.onBackspace() else engine.deleteWord()
+        val e = editEngine()
+        if (count <= 20) e.onBackspace() else e.deleteWord()
     }
 
-    override fun onBackspaceSwipeStart(): Boolean = engine.backspaceSwipeStart()
-    override fun onBackspaceSwipe(steps: Int) = engine.backspaceSwipe(steps)
-    override fun onBackspaceSwipeEnd() = engine.backspaceSwipeEnd()
-    override fun onCursorSwipe(steps: Int) = engine.moveCursor(steps)
+    override fun onBackspaceSwipeStart(): Boolean {
+        val e = editEngine()
+        swipeEngine = e
+        return e.backspaceSwipeStart()
+    }
+
+    override fun onBackspaceSwipe(steps: Int) = (swipeEngine ?: editEngine()).backspaceSwipe(steps)
+
+    override fun onBackspaceSwipeEnd() {
+        (swipeEngine ?: editEngine()).backspaceSwipeEnd()
+        swipeEngine = null
+    }
+
+    override fun onCursorSwipe(steps: Int) = editEngine().moveCursor(steps)
 
     override fun onSystemLongPress(key: KeyboardView.Key) {
         haptic(null)
@@ -501,14 +569,15 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         val l = key.label
         if (l.isEmpty() || l.length > 3) return null
         val upper = engine.upperCase
-        if (layout == Layout.TRANSLIT && page == Page.LETTERS && l.length == 1 && l[0].isLetter()) {
+        if (layout == Layout.TRANSLIT && live == null && page == Page.LETTERS && l.length == 1 && l[0].isLetter()) {
             return st.translitMode.translit(l[0], upper, engine.shift == InputEngine.Shift.LOCKED).ifEmpty { l }
         }
         return if (upper && l.length == 1 && l[0].isLetter()) l.uppercase() else l
     }
 
     private fun openSettings() {
-        engine.finishComposing()
+        closeTranslate()
+        mainEngine.finishComposing()
         startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         requestHideSelf(0)
     }
@@ -548,161 +617,436 @@ class TranslitKeyboardService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
-    // ================================================================ панель перевода
+    // ================================================================ перевод
 
-    private fun openTranslate() {
-        val col = column ?: return
-        if (translatePanel != null) return
-        engine.finishComposing()
-        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        translatePanel = panel
-        buildTranslatePanel(panel)
-        strip?.visibility = View.GONE
-        col.addView(panel, 0, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    private enum class Source { SELECTION, FIELD, CLIPBOARD }
+
+    /** Разовый перевод: выделенного, текста поля или скопированного. */
+    private class OneShot(
+        val source: Source,
+        /** Текст как в поле — чтобы заменять, только если он не изменился. */
+        val original: String,
+        /** Что переводим (транслит уже переведён в кириллицу). */
+        var input: String,
+        val before: Int,
+        val after: Int
+    ) {
+        var from: String? = null
+        var target = "en"
+        var result: TranslationManager.Result? = null
+        var gen = 0
+    }
+
+    private var oneShot: OneShot? = null
+
+    private val liveField = object : LiveTranslation.Field {
+        override fun textBefore(n: Int): String? = currentInputConnection?.getTextBeforeCursor(n, 0)?.toString()
+
+        override fun replace(oldLen: Int, text: String, composing: Boolean) {
+            val c = currentInputConnection ?: return
+            c.beginBatchEdit()
+            c.finishComposingText()
+            if (oldLen > 0) c.deleteSurroundingText(oldLen, 0)
+            if (text.isNotEmpty()) {
+                if (composing) c.setComposingText(text, 1) else c.commitText(text, 1)
+            }
+            c.endBatchEdit()
+        }
+
+        override fun finishComposing() {
+            currentInputConnection?.finishComposingText()
+        }
+    }
+
+    private val liveScheduler = object : LiveTranslation.Scheduler {
+        override fun post(delayMs: Long, r: Runnable) {
+            handler.postDelayed(r, delayMs)
+        }
+
+        override fun cancel(r: Runnable) = handler.removeCallbacks(r)
+    }
+
+    private val panelHost = object : TranslatePanel.Host {
+        override fun onClose() { haptic(null); closeTranslate() }
+        override fun onLanguageButton() { haptic(null); toggleLanguagePicker() }
+        override fun onPickLanguage(code: String) { haptic(null); pickLanguage(code) }
+        override fun onLive() { haptic(null); startLive() }
+        override fun onTranslateField() { haptic(null); translateField() }
+        override fun onTranslateClipboard() { haptic(null); translateClipboard() }
+        override fun onApply() { haptic(null); applyOneShot() }
+        override fun onCopy() { haptic(null); copyOneShot() }
+        override fun onDownload(langs: List<String>) { haptic(null); downloadModels(langs) }
+    }
+
+    private fun langName(code: String?): String = if (code.isNullOrEmpty()) "Авто" else TranslationManager.name(code)
+
+    /** Значок перевода: выделен текст — перевести его, иначе — набор с переводом. */
+    private fun toggleTranslate() {
+        if (panel != null) {
+            closeTranslate()
+            return
+        }
+        val sel = currentInputConnection?.getSelectedText(0)?.toString()
+        if (!sel.isNullOrBlank()) translateText(sel, Source.SELECTION) else startLive()
+    }
+
+    private fun openPanel(): TranslatePanel? {
+        panel?.let { return it }
+        val col = column ?: return null
+        mainEngine.finishComposing()
+        mainEngine.offerClipboard(false)
+        val p = TranslatePanel(this, panelHost)
+        p.applyTheme(pal, st.fontSize)
+        col.addView(p, 0, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        panel = p
+        return p
     }
 
     private fun closeTranslate() {
-        translateThread?.interrupt()
-        translateThread = null
-        translatePanel?.let { column?.removeView(it) }
-        translatePanel = null
-        translatePreview = null
+        stopLive()
+        oneShot = null
+        panel?.let { column?.removeView(it) }
+        panel = null
         strip?.visibility = View.VISIBLE
+        onEngineChanged()
     }
 
-    private fun buildTranslatePanel(panel: LinearLayout) {
-        panel.setBackgroundColor(pal.barBg)
-        val title = TextView(this).apply {
-            text = "Перевод (Google)"
-            setTextColor(pal.text)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f * st.fontSize)
-            setTypeface(null, Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(dp(8f).toInt(), dp(4f).toInt(), 0, dp(4f).toInt()) }
-        }
-        panel.addView(title)
+    // ---------------------------------------------------------------- набор с переводом
 
-        val preview = TextView(this).apply {
-            text = "Наберите текст, выберите язык и нажмите на него"
-            setTextColor(pal.dimText)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f * st.fontSize)
-            maxLines = 3
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(dp(8f).toInt(), 0, dp(8f).toInt(), dp(4f).toInt()) }
-        }
-        panel.addView(preview)
-        translatePreview = preview
+    private fun liveSource(): String? = (live?.engine?.lang ?: layoutLang).ifEmpty { null }
 
-        val scroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(110f).toInt())
-        }
-        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        for (chunk in TranslationManager.LANGS.chunked(4)) {
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            for ((code, name) in chunk) {
-                row.addView(Button(this).apply {
-                    text = name
-                    isAllCaps = false
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f * st.fontSize)
-                    setTextColor(pal.text)
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(8f)
-                        setColor(pal.keyTop)
-                    }
-                    val m = dp(2f).toInt()
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                        .apply { setMargins(m, m, m, m) }
-                    setOnClickListener { doTranslate(code, name) }
-                })
-            }
-            grid.addView(row)
-        }
-        scroll.addView(grid)
-        panel.addView(scroll)
+    private fun liveTitle() = langName(liveSource()) + " → " + langName(st.translateTarget)
 
-        panel.addView(Button(this).apply {
-            text = "✕ Закрыть"
-            isAllCaps = false
-            setTextColor(pal.text)
-            background = GradientDrawable().apply {
-                cornerRadius = dp(8f)
-                setColor(pal.funcTop)
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(dp(6f).toInt(), dp(6f).toInt(), dp(6f).toInt(), dp(2f).toInt()) }
-            setOnClickListener { closeTranslate() }
-        })
+    private fun liveHint() = "Пишите здесь — в поле сразу появится перевод (${langName(st.translateTarget)})"
+
+    private fun startLive() {
+        val p = openPanel() ?: return
+        oneShot = null
+        if (live == null) {
+            mainEngine.finishComposing()
+            val l = LiveTranslation(
+                liveField,
+                { text, done ->
+                    TranslationManager.translateAsync(
+                        this, text, st.translateTarget, st.translationMode, liveSource(), persist = false, done = done
+                    )
+                },
+                liveScheduler,
+                LiveTranslation.LIVE_PROFILE.copy(learning = profile.learning)
+            )
+            l.engine.onSwitchLanguage = { target -> switchForFix(target) }
+            l.onChange = { onEngineChanged() }
+            live = l
+            applySettingsToEngine()
+            applyLayoutToEngine()
+        }
+        p.showLive(liveTitle(), liveHint())
+        strip?.visibility = View.VISIBLE
+        rebuildKeys()
+        onEngineChanged()
     }
 
-    private fun doTranslate(target: String, targetName: String) {
-        val pv = translatePreview ?: return
-        val ic = currentInputConnection ?: return
-        engine.finishComposing()
-        val before = ic.getTextBeforeCursor(200, 0)?.toString() ?: ""
-        if (before.isBlank()) {
-            pv.text = "Сначала наберите текст"
+    private fun stopLive() {
+        val l = live ?: return
+        live = null
+        l.close()
+        rebuildKeys()
+        onEngineChanged()
+    }
+
+    private fun liveStatus(l: LiveTranslation): String {
+        if (liveSource() == st.translateTarget) return "Язык набора и перевода совпадают — выберите язык ▾"
+        return when (l.state) {
+            LiveTranslation.State.IDLE ->
+                if (l.committed) "Перевод вставлен · ⏎ — отправить" else "⏎ — вставить перевод в поле"
+            LiveTranslation.State.TYPING -> "…"
+            LiveTranslation.State.TRANSLATING -> if (l.commitPending) "Перевожу и вставляю…" else "Перевожу…"
+            LiveTranslation.State.DONE -> engineName(l.lastResult) + " · ⏎ — вставить"
+            LiveTranslation.State.ERROR -> "Не перевелось: " + (l.error ?: "ошибка")
+        }
+    }
+
+    private fun engineName(r: TranslationManager.Result?): String = when (r?.engine) {
+        null, "" -> "Без перевода"
+        TranslationManager.ENGINE_OFFLINE -> "Без интернета"
+        else -> r.engine + ", онлайн"
+    }
+
+    // ---------------------------------------------------------------- разовый перевод
+
+    private fun translateField() {
+        val c = currentInputConnection ?: return
+        stopLive()
+        mainEngine.finishComposing()
+        val sel = c.getSelectedText(0)?.toString()
+        if (!sel.isNullOrBlank()) {
+            translateText(sel, Source.SELECTION)
             return
         }
-        TranslationManager.getCached(this, before.trim(), target)?.let { cached ->
-            pv.text = cached
-            pv.setTextColor(pal.accent)
-            showInsertButton(cached, before.length)
+        val before = c.getTextBeforeCursor(MAX_FIELD_TEXT, 0)?.toString() ?: ""
+        val after = c.getTextAfterCursor(MAX_FIELD_TEXT, 0)?.toString() ?: ""
+        translateText(before + after, Source.FIELD, before.length, after.length)
+    }
+
+    private fun translateClipboard() {
+        val text = try {
+            clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
+        } catch (_: Exception) {
+            null
+        }
+        translateText(text ?: "", Source.CLIPBOARD)
+    }
+
+    private fun hasCyrillic(s: String) = s.any { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.CYRILLIC }
+
+    private fun translateText(text: String, source: Source, before: Int = 0, after: Int = 0) {
+        val p = openPanel() ?: return
+        stopLive()
+        strip?.visibility = View.GONE
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) {
+            oneShot = null
+            val msg = if (source == Source.CLIPBOARD) "Скопированного текста нет" else "В поле нет текста"
+            p.showResult(langName(null) + " → " + langName(st.translateTarget), "", null, msg, true, null)
             return
         }
-        pv.text = "Перевожу на $targetName…"
-        pv.setTextColor(pal.dimText)
-        translateThread?.interrupt()
-        translateThread = thread(start = true) {
-            val result = try {
-                TranslationManager.translate(this, before.trim(), target)
-            } catch (e: Exception) {
-                "Ошибка сети: ${e.message}"
+        // латиница в своём поле при транслите — скорее всего транслит (privet → привет),
+        // но английский текст так и остаётся английским: это решают словари и ML Kit
+        val preferTranslit = source != Source.CLIPBOARD && layout == Layout.TRANSLIT && !hasCyrillic(trimmed)
+        val shot = OneShot(source, text, trimmed, before, after)
+        oneShot = shot
+        p.showResult("…", shot.input, null, "Определяю язык…", false, null)
+        TranslationManager.detectAsync(trimmed, preferTranslit) { d, input ->
+            if (oneShot === shot) {
+                shot.input = input
+                chooseTarget(shot, d)
             }
-            handler.post {
-                val p = translatePreview ?: return@post
-                p.text = result
-                if (result.startsWith("Ошибка")) {
-                    p.setTextColor(Color.RED)
+        }
+    }
+
+    /** Своё — на язык перевода, чужое (скопированное, на языке перевода) — на русский. */
+    private fun chooseTarget(shot: OneShot, d: TranslationManager.Detected) {
+        val out = st.translateTarget
+        val other = if (out == "ru") "en" else "ru"
+        shot.from = if (d.reliable) d.lang else null
+        shot.target = when (shot.source) {
+            Source.CLIPBOARD -> if (d.lang != "ru") "ru" else if (out == "ru") "en" else out
+            else -> if (d.lang == out) other else out
+        }
+        runOneShot(shot)
+    }
+
+    private fun oneShotTitle(shot: OneShot) = langName(shot.from) + " → " + langName(shot.target)
+
+    private fun applyLabel(shot: OneShot) = when (shot.source) {
+        Source.SELECTION -> "Заменить"
+        Source.FIELD -> "Заменить всё"
+        Source.CLIPBOARD -> "Вставить"
+    }
+
+    private fun resultNote(r: TranslationManager.Result): String {
+        val base = when (r.engine) {
+            "" -> "Текст уже на этом языке"
+            TranslationManager.ENGINE_OFFLINE -> "Переведено без интернета"
+            else -> "Переведено: ${r.engine}, онлайн"
+        }
+        if (r.offlineMissing.isEmpty()) return base
+        return "$base · чтобы без интернета, скачайте: " + r.offlineMissing.joinToString { langName(it) } + " (~30 МБ)"
+    }
+
+    private fun runOneShot(shot: OneShot) {
+        val p = panel ?: return
+        val g = ++shot.gen
+        shot.result = null
+        p.showResult(oneShotTitle(shot), shot.input, null, "Перевожу…", false, null)
+        TranslationManager.translateAsync(this, shot.input, shot.target, st.translationMode, shot.from) { r, e ->
+            if (oneShot !== shot || shot.gen != g) return@translateAsync
+            shot.result = r
+            if (r != null && r.source.isNotEmpty()) shot.from = r.source
+            showOneShot(shot, e)
+        }
+    }
+
+    private fun showOneShot(shot: OneShot, e: Exception? = null, status: String? = null) {
+        val p = panel ?: return
+        val r = shot.result
+        if (r != null) {
+            p.showResult(oneShotTitle(shot), shot.input, r.text, status ?: resultNote(r), false, applyLabel(shot), r.offlineMissing)
+        } else {
+            p.showResult(
+                oneShotTitle(shot), shot.input, null, status ?: ("Не перевелось: " + (e?.message ?: "ошибка")), true, null,
+                (e as? TranslationManager.Failure)?.missing ?: emptyList()
+            )
+        }
+    }
+
+    private fun applyOneShot() {
+        val shot = oneShot ?: return
+        val r = shot.result ?: return
+        val c = currentInputConnection ?: return
+        mainEngine.finishComposing()
+        c.beginBatchEdit()
+        when (shot.source) {
+            Source.SELECTION -> {
+                if (c.getSelectedText(0)?.toString() == shot.original) c.commitText(r.text, 1) else insertAtCursor(c, r.text)
+            }
+            Source.FIELD -> {
+                val b = c.getTextBeforeCursor(shot.before, 0)?.toString() ?: ""
+                val a = c.getTextAfterCursor(shot.after, 0)?.toString() ?: ""
+                if (b + a == shot.original) {
+                    c.deleteSurroundingText(shot.before, shot.after)
+                    c.commitText(r.text, 1)
                 } else {
-                    p.setTextColor(pal.accent)
-                    showInsertButton(result, before.length)
+                    insertAtCursor(c, r.text)
+                }
+            }
+            Source.CLIPBOARD -> insertAtCursor(c, r.text)
+        }
+        c.endBatchEdit()
+        closeTranslate()
+    }
+
+    private fun insertAtCursor(c: InputConnection, text: String) {
+        val before = c.getTextBeforeCursor(1, 0)?.toString() ?: ""
+        val sep = if (before.isNotEmpty() && !before[0].isWhitespace() && text.firstOrNull()?.isLetterOrDigit() == true) " " else ""
+        c.commitText(sep + text, 1)
+    }
+
+    private fun copyOneShot() {
+        val shot = oneShot ?: return
+        val r = shot.result ?: return
+        try {
+            ownClip = true
+            clipboard?.setPrimaryClip(ClipData.newPlainText("Перевод", r.text))
+        } catch (_: Exception) {
+            ownClip = false
+        }
+        showOneShot(shot, status = "Скопировано")
+    }
+
+    // ---------------------------------------------------------------- языки
+
+    private fun toggleLanguagePicker() {
+        val p = panel ?: return
+        if (p.mode == TranslatePanel.Mode.PICKER) {
+            val shot = oneShot
+            if (live == null && shot != null) showOneShot(shot) else startLive()
+            return
+        }
+        val shot = oneShot
+        strip?.visibility = View.GONE
+        if (live == null && shot != null) p.showPicker(oneShotTitle(shot), shot.target)
+        else p.showPicker(liveTitle(), st.translateTarget)
+    }
+
+    private fun pickLanguage(code: String) {
+        val shot = oneShot
+        if (live != null || shot == null) {
+            KbSettings.update(this) { it.copy(translateTarget = code) }
+            st = KbSettings.get(this)
+            startLive()
+            live?.retranslate()
+            return
+        }
+        // своё — запоминаем язык перевода; перевод скопированного на другой язык — только сейчас
+        if (shot.source != Source.CLIPBOARD && code != "ru") {
+            KbSettings.update(this) { it.copy(translateTarget = code) }
+            st = KbSettings.get(this)
+        }
+        shot.target = code
+        runOneShot(shot)
+    }
+
+    private fun downloadModels(langs: List<String>) {
+        if (langs.isEmpty()) return
+        val wifi = st.translateWifiOnly
+        val names = langs.joinToString { langName(it) }
+        setTranslateStatus(
+            if (wifi && !TranslationManager.onWifi(this)) "Скачаю $names (~30 МБ), как только будет Wi‑Fi…"
+            else "Скачиваю $names (~30 МБ)…",
+            false
+        )
+        TranslationManager.background({ TranslationManager.offline.download(langs, wifi) }) { err ->
+            if (err != null) {
+                setTranslateStatus("Не скачалось: $err", true)
+                return@background
+            }
+            TranslationManager.clearMemoryCache()
+            val shot = oneShot
+            when {
+                live != null -> live?.retranslate()
+                shot != null -> runOneShot(shot)
+            }
+        }
+    }
+
+    private fun setTranslateStatus(msg: String, error: Boolean) {
+        val p = panel ?: return
+        val shot = oneShot
+        when {
+            live != null && p.mode == TranslatePanel.Mode.LIVE -> p.setLiveStatus(msg, error, emptyList())
+            shot != null && p.mode == TranslatePanel.Mode.RESULT -> showOneShot(shot, status = msg)
+        }
+    }
+
+    // ---------------------------------------------------------------- скопированное
+
+    private var clipboard: ClipboardManager? = null
+    private var ownClip = false
+    private var clipChangedAt = 0L
+    private var lastOfferedClip = 0L
+
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
+        clipChangedAt = System.currentTimeMillis()
+        if (ownClip) {
+            // своё копирование («Копировать» в панели) не предлагаем переводить
+            ownClip = false
+            lastOfferedClip = clipStamp()
+            return@OnPrimaryClipChangedListener
+        }
+        if (isInputViewShown) maybeOfferClip()
+    }
+
+    /** Когда скопировано (содержимое не читаем — Android покажет «вставлено из буфера» только по нажатию). */
+    private fun clipStamp(): Long {
+        val d = try {
+            clipboard?.primaryClipDescription
+        } catch (_: Exception) {
+            null
+        } ?: return 0L
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // время копирования от системы; если оно странное (сбитые часы) — время уведомления
+            val ts = d.timestamp
+            if (ts > 0 && kotlin.math.abs(System.currentTimeMillis() - ts) < DAY_MS) return ts
+        }
+        return clipChangedAt
+    }
+
+    /** Только что скопировали текст — предложить перевести его (один раз). */
+    private fun maybeOfferClip() {
+        var offer = false
+        if (st.clipTranslate && profile.kind == FieldProfile.Kind.TEXT && panel == null) {
+            val d = try {
+                clipboard?.primaryClipDescription
+            } catch (_: Exception) {
+                null
+            }
+            if (d != null && (d.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) || d.hasMimeType(ClipDescription.MIMETYPE_TEXT_HTML))) {
+                val stamp = clipStamp()
+                val age = System.currentTimeMillis() - stamp
+                if (stamp > 0 && stamp != lastOfferedClip && age in 0..CLIP_OFFER_MS) {
+                    lastOfferedClip = stamp
+                    offer = true
                 }
             }
         }
+        mainEngine.offerClipboard(offer)
     }
 
-    private fun showInsertButton(result: String, sourceLen: Int) {
-        val panel = translatePanel ?: return
-        for (i in panel.childCount - 1 downTo 0) {
-            if (panel.getChildAt(i).tag == "insert") panel.removeViewAt(i)
-        }
-        val btn = Button(this).apply {
-            tag = "insert"
-            text = "⤵ Вставить перевод"
-            isAllCaps = false
-            setTextColor(Color.WHITE)
-            background = GradientDrawable().apply {
-                cornerRadius = dp(8f)
-                setColor(pal.accent)
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(dp(6f).toInt(), dp(2f).toInt(), dp(6f).toInt(), dp(2f).toInt()) }
-            setOnClickListener {
-                val ic = currentInputConnection ?: return@setOnClickListener
-                engine.finishComposing()
-                ic.beginBatchEdit()
-                val before = ic.getTextBeforeCursor(sourceLen, 0)?.toString() ?: ""
-                if (before.length == sourceLen && sourceLen > 0) ic.deleteSurroundingText(sourceLen, 0)
-                ic.commitText(result, 1)
-                ic.endBatchEdit()
-                closeTranslate()
-            }
-        }
-        panel.addView(btn, panel.childCount - 1)
+    private companion object {
+        const val MAX_FIELD_TEXT = 2000
+        const val CLIP_OFFER_MS = 3 * 60_000L
+        const val DAY_MS = 24 * 3600_000L
     }
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density

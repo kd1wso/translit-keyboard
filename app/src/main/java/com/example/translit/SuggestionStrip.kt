@@ -73,17 +73,24 @@ class SuggestionStrip(
         visibility = View.GONE
     }
 
+    private var translateActive = false
+
     fun applyTheme(p: KbSettings.Palette, scale: Float) {
         pal = p
         fontScale = scale
         setBackgroundColor(p.barBg)
         (settingsBtn.drawable)?.setTint(p.dimText)
-        (translateBtn.drawable)?.setTint(p.dimText)
+        (translateBtn.drawable)?.setTint(if (translateActive) p.accent else p.dimText)
         render()
     }
 
-    fun setChips(list: List<InputEngine.Chip>, showTranslate: Boolean) {
+    /** [translateActive] — панель перевода открыта (значок цветом акцента). */
+    fun setChips(list: List<InputEngine.Chip>, showTranslate: Boolean, translateActive: Boolean = false) {
         translateBtn.visibility = if (showTranslate) View.VISIBLE else View.GONE
+        if (translateActive != this.translateActive) {
+            this.translateActive = translateActive
+            translateBtn.drawable?.setTint(if (translateActive) pal.accent else pal.dimText)
+        }
         if (list == chips) return
         chips = list
         render()
